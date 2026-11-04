@@ -113,7 +113,9 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   let handled = 0;
   for (const m of messages) {
     if (handleBounce(a, m)) { handled++; continue; }
-    if (handleBooking(a, m)) { handled++; continue; }
+    // A person we wrote to who works at Calendly or Cal.com is a person: their reply, or their opt-out, comes first.
+    const isContact = !!one(a.db, 'select 1 from contacts where email = ?', m.from);
+    if (!isContact && handleBooking(a, m)) { handled++; continue; }
     const contact = one<{ id: number; first_name: string; company_id: number; email: string }>(a.db, 'select id, first_name, company_id, email from contacts where email = ?', m.from);
     if (!contact) continue;
     if (one(a.db, 'select 1 from replies where message_id = ?', m.messageId)) continue;
