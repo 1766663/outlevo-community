@@ -21,6 +21,10 @@ describe('lintEmail', () => {
     expect(rules({ ...good, subject: 'Re: our chat' })).toContain('fake-thread');
     expect(rules({ ...good, body: `${good.body} As we discussed last week.` })).toContain('fake-history');
   });
+  it('refuses a first email pretending to follow something up, but lets a follow-up say so', () => {
+    expect(rules({ ...good, body: `Following up on my last email. ${good.body}` })).toContain('fake-history');
+    expect(rules({ subject: 'A thought', body: 'Following up on my last email with one idea.', step: 2 })).toEqual([]);
+  });
   it('refuses placeholders that would go out blank', () => {
     expect(rules({ ...good, body: `Hi {{first_name}}, ${good.body}` })).toContain('merge-tag');
     expect(rules({ ...good, body: `Hi [First Name], ${good.body}` })).toContain('merge-tag');

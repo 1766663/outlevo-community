@@ -31,6 +31,12 @@ describe('config', () => {
     expect(() => setPath(c, 'limits.nope', '1')).toThrow(/Unknown/);
     expect(() => setPath(c, 'nope.x', '1')).toThrow(/Unknown/);
   });
+  it('refuses a date that does not exist', () => {
+    const c = structuredClone(DEFAULTS);
+    expect(() => setPath(c, 'warmup_start', '2026-02-31')).toThrow(/warmup_start/);
+    expect(() => setPath(c, 'warmup_start', '2026-1101')).toThrow(/warmup_start/);
+    expect(setPath(c, 'warmup_start', '2026-11-01').warmup_start).toBe('2026-11-01');
+  });
   it('fills new defaults into an older file', () => {
     const h = home(); saveConfig({ ...structuredClone(DEFAULTS), website: 'https://x.com' }, h);
     expect(loadConfig(h).website).toBe('https://x.com');

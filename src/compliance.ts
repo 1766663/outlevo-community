@@ -17,7 +17,7 @@ const DIRECT_STOP = [
   /(descadastr|parem?\s+de\s+(me\s+)?(enviar|escrever)|n[ãa]o\s+me\s+(envie|escreva))/i, /(disiscriv|non\s+scrivetemi|smettete\s+di)/i,
   /(отпиш|не\s+пишите|удалите\s+меня|перестаньте\s+писать)/i,
 ];
-const SHORT_STOP = /^\W*(please\s+)?(stop|unsubscribe|opt[\s-]?out|remove|no\s+thanks?|no\s+thank\s+you|not\s+interested|gdpr)\b/i;
+const SHORT_STOP = /^\W*(please\s+)?(stop|unsubscribe|opt[\s-]?out|remove|no\s+thanks?|no\s+thank\s+you|not\s+interested)\W*((thanks?|thank\s+you|please|now|sorry)\W*)*$/i;
 const SUBJECT_STOP = /^\s*((re|aw|sv|odp)\s*:\s*)?(stop|unsubscribe|remove\s+me|opt[\s-]?out)\s*[.!]*\s*$/i;
 
 /** What the person wrote, without the mail they quoted or their signature: above or below a quote, it may be anywhere. */
@@ -41,22 +41,25 @@ export function asksToStop(subject: string, text: string): boolean {
 }
 
 const domainOf = (email: string) => email.split('@')[1]?.toLowerCase() ?? '';
+/** a+work@b.com and a@b.com reach one person. */
+export const baseAddress = (email: string) => { const [local = '', domain = ''] = email.trim().toLowerCase().split('@'); return domain ? `${local.split('+')[0]}@${domain}` : email.trim().toLowerCase(); };
 const cleanEntry = (v: string) => v.trim().toLowerCase().replace(/^@/, '').replace(/^www\./, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 // a.b.example.com is also covered by b.example.com and example.com
 const suffixes = (d: string) => { const p = d.split('.'); return p.slice(0, -1).map((_, i) => p.slice(i).join('.')); };
 
 export function isSuppressed(a: App, email: string): string | null {
-  const e = email.trim().toLowerCase(); const scope = new Set([e, ...suffixes(domainOf(e))]);
+  const e = email.trim().toLowerCase(); const scope = new Set([e, baseAddress(e), ...suffixes(domainOf(e))]);
   if (a.config.do_not_contact.some((x) => scope.has(cleanEntry(x)))) return 'on your do-not-contact list';
   for (const v of scope) { const hit = one<{ reason: string }>(a.db, 'select reason from suppression where value = ?', v); if (hit) return hit.reason; }
   return null;
 }
 
 export function suppress(a: App, value: string, reason: string) {
-  const v = value.includes('@') ? value.trim().toLowerCase() : cleanEntry(value);
+  const v = value.includes('@') ? baseAddress(value) : cleanEntry(value);
   run(a.db, 'insert into suppression (value, reason, created_at) values (?, ?, ?) on conflict (value) do nothing', v, reason, a.now().toISOString());
+  const alias = v.includes('@') ? `${v.split('@')[0]}+%@${v.split('@')[1]}` : `%@${v}`;
   run(a.db, `update drafts set status = 'cancelled' where status in ('pending','approved','blocked')
-    and contact_id in (select id from contacts where email = ? or email like ? or email like ?)`, v, `%@${v}`, `%.${v}`);
+    and contact_id in (select id from contacts where email = ? or email like ? or email like ?)`, v, alias, `%.${v}`);
   logEvent(a.db, a.now(), 'suppression.added', { value: v, reason });
 }
 
@@ -118,7 +121,7 @@ export async function readiness(a: App, dns: Dns = realDns): Promise<Check[]> {
   const add = (name: string, ok: boolean, blocking: boolean, detail: string) => out.push({ name, ok, blocking, detail });
   const domain = domainOf(c.sender.email);
   add('Sender name and company', !!c.sender.name && !!c.sender.company, true, 'sender.name and sender.company');
-  add('Postal address', c.sender.postal_address.trim().length > 10, true, 'CAN-SPAM needs a real postal address in every email: sender.postal_address');
+  add('Postal address', String(c.sender.postal_address ?? '').trim().length > 10, true, 'CAN-SPAM needs a real postal address in every email: sender.postal_address');
   const wrong = settingsProblems(c);
   add('Settings', !wrong.length, true, wrong.join('; '));
   add('Sending address', !!domain, true, 'sender.email: an address on a separate domain you bought for sending, not your main one');

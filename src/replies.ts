@@ -43,11 +43,13 @@ const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
 /** Reads the topmost Authentication-Results, the one your own provider added. Anything else in the message came from the sender. */
 export function senderProven(header: unknown, fromDomain: string): boolean {
   const first = Array.isArray(header) ? header[0] : header;
-  const text = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
+  const raw = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
+  // Comments and quoted strings can carry anything: only the verdicts themselves count, one method at a time.
+  const verdicts = raw.replace(/\([^)]*\)/g, ' ').replace(/"[^"]*"/g, ' ').split(';').map((x: string) => x.trim());
   const d = fromDomain.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const own = `@?(?:[a-z0-9-]+\\.)*${d}(?![a-z0-9.-])`;
-  return new RegExp(`\\bdmarc=pass\\b[^;]*header\\.from=${own}`, 'i').test(text)
-    || new RegExp(`\\bdkim=pass\\b[^;]*header\\.[di]=${own}`, 'i').test(text);
+  const dmarc = new RegExp(`^dmarc=pass\\b.*\\bheader\\.from=${own}`, 'i'); const dkim = new RegExp(`^dkim=pass\\b.*\\bheader\\.[di]=${own}`, 'i');
+  return verdicts.some((v: string) => dmarc.test(v) || dkim.test(v));
 }
 
 /** The person this booking is with: an exact address in the message, someone we really wrote to, the latest first. */
@@ -95,7 +97,8 @@ const cancelRest = (a: App, contactId: number) => run(a.db, "update drafts set s
 
 function handleBounce(a: App, m: Incoming): boolean {
   if (!/^(mailer-daemon|postmaster|mail-daemon)@/i.test(m.from)) return false;
-  const hit = all<{ id: number; email: string }>(a.db, "select id, email from contacts where status = 'active'").find((c) => m.text.toLowerCase().includes(c.email));
+  // An exact address: ann@ must not take the blame for joann@.
+  const hit = bookedContact(a, m.text) ?? one<{ id: number; email: string }>(a.db, `select id, email from contacts where status = 'active' and email in (${[...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()))].map(() => '?').join(',') || "''"}) limit 1`, ...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase())));
   if (hit) {
     run(a.db, "update contacts set status = 'bounced' where id = ?", hit.id);
     cancelRest(a, hit.id);
@@ -135,7 +138,12 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
     // A person we wrote to who works at Calendly or Cal.com is a person: their reply, or their opt-out, comes first.
     const { contact } = whoWrote(a, m);
     if (!contact && handleBooking(a, m)) { handled++; continue; }
-    if (!contact) { logEvent(a.db, a.now(), 'mail.unmatched', { from: m.from, subject: m.subject.slice(0, 200) }); continue; }
+    if (!contact) {
+      // Asked by someone we cannot place: costs nothing to honour.
+      if (m.from.includes('@') && asksToStop(m.subject, m.text)) suppress(a, m.from, 'asked to stop');
+      logEvent(a.db, a.now(), 'mail.unmatched', { from: m.from, subject: m.subject.slice(0, 200) });
+      continue;
+    }
     if (one(a.db, 'select 1 from replies where message_id = ?', m.messageId)) continue;
     handled++;
 

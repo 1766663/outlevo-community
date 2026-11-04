@@ -174,7 +174,10 @@ export async function researchCompany(a: App, companyId: number) {
   for (const p of x.people) {
     const page = pageOf(p.source_url);
     if (!page || !quoteIsOn(p.quote, page.text)) continue;
-    if (p.email && page.text.toLowerCase().includes(p.email.toLowerCase())) people += addContact(a, { company_id: c.id, first_name: p.first_name, last_name: p.last_name, title: p.title, email: p.email, email_source: 'published' }) ? 1 : 0;
+    // Printed on the page as this exact address, on this company's own domain.
+    const printed = new Set((page.text.match(/[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi) ?? []).map((x) => x.toLowerCase()));
+    const mail = p.email?.trim().toLowerCase() ?? ''; const host = mail.split('@')[1] ?? '';
+    if (p.email && printed.has(mail) && (host === c.domain || host.endsWith(`.${c.domain}`))) people += addContact(a, { company_id: c.id, first_name: p.first_name, last_name: p.last_name, title: p.title, email: p.email, email_source: 'published' }) ? 1 : 0;
   }
   if (!known.length) { run(a.db, 'update companies set name = coalesce(?, name) where id = ?', x.name, c.id); return fail('Nothing on the site could be quoted'); }
 
@@ -258,12 +261,14 @@ Only state what the facts say. Each statement about the prospect is a claim: cop
       user: `Quotes:\n${untrusted(r.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${seq.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
       schema: obj({ unsupported: arr(obj({ email: { type: 'integer' }, statement: S })) }),
     });
-    return v.unsupported ?? [];
+    // No clear verdict is not a pass.
+    if (!Array.isArray(v?.unsupported)) throw new Error(`The second check of the emails to ${r.domain} gave no clear answer`);
+    return v.unsupported;
   };
   const checked = async (seq: Written) => {
     const out = lintSequence(a, seq, facts, r.domain);
     if (out.some(hasErrors)) return out;
-    for (const u of await reread(seq)) (out[Math.max(0, u.email - 1)] ??= []).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
+    for (const u of await reread(seq)) (out[Math.min(Math.max(0, (Number.isInteger(u.email) ? u.email : 1) - 1), Math.min(seq.emails.length, 3) - 1)] ??= []).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
     return out;
   };
   let seq = await ask(''); let issues = await checked(seq);

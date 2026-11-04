@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { assertPublicUrl, extractLinks, htmlToText, isPrivateAddress, makeFetcher, quoteIsOn, robotsAllows } from '../src/fetcher.js';
 
 describe('isPrivateAddress', () => {
-  it.each(['127.0.0.1', '10.1.2.3', '192.168.0.1', '172.16.0.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:10.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '64:ff9b::7f00:1', '::127.0.0.1', '2002:7f00:1::', 'fec0::1', 'ff02::1', 'not an address'])('refuses %s', (ip) => { expect(isPrivateAddress(ip)).toBe(true); });
+  it.each(['127.0.0.1', '10.1.2.3', '192.168.0.1', '172.16.0.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:10.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '::ffff:0:7f00:1', '64:ff9b::7f00:1', '::127.0.0.1', '2002:7f00:1::', 'fec0::1', 'ff02::1', 'not an address'])('refuses %s', (ip) => { expect(isPrivateAddress(ip)).toBe(true); });
   it.each(['8.8.8.8', '172.32.0.1', '2606:4700::1111'])('allows %s', (ip) => { expect(isPrivateAddress(ip)).toBe(false); });
 });
 

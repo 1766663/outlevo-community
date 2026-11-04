@@ -94,6 +94,27 @@ describe('no cap on what you ask for', () => {
   });
 });
 
+describe('second check, and printed addresses', () => {
+  it('no clear verdict is not a pass', async () => {
+    const { a, id } = await prepared(); const m = a.model();
+    (a as any).model = () => ({ ...m, json: async (r: any) => (r.name === 'verify_email' ? { unsupported: 'none' } : m.json(r)) });
+    await expect(writeForCompany(a, id)).rejects.toThrow(/no clear answer/);
+  });
+  it('a verdict naming an email that does not exist still blocks', async () => {
+    const { a, id } = await prepared(); const m = a.model();
+    (a as any).model = () => ({ ...m, json: async (r: any) => (r.name === 'verify_email' ? { unsupported: [{ email: 9, statement: 'Made up' }] } : m.json(r)) });
+    expect((await writeForCompany(a, id)).status).toBe('blocked');
+  });
+  it('takes only an exact address, on the company\'s own domain', async () => {
+    const page = { ...pages, 'https://northwind.com/': { ...pages['https://northwind.com/'], text: `${pages['https://northwind.com/'].text} Write to xjane@northwind.com or lee@gmail.com or kim@sales.northwind.com today.` } };
+    const person = (email: string) => ({ first_name: 'P', last_name: null, title: null, email, quote: 'We are hiring account executives in Austin', source_url: 'https://northwind.com/' });
+    const a = testApp({ pages: page, answers: { ...answers, research: { ...answers.research, people: [person('jane@northwind.com'), person('lee@gmail.com'), person('kim@sales.northwind.com')] } } });
+    await learnProduct(a); await learnIcp(a, {});
+    await researchCompany(a, addCompany(a, 'northwind.com', 'manual').id);
+    expect(all<any>(a.db, 'select email from contacts').map((c) => c.email)).toEqual(['kim@sales.northwind.com']);
+  });
+});
+
 describe('rewrite', () => {
   const asked = (over: any = {}) => async (r: any) => ({ angle: 'hiring', emails: [{ subject: 'Short', body: 'Saw you are hiring account executives in Austin.', delay_days: 0, claims: [{ text: 'hiring account executives in Austin', fact_id: Number(r.user.match(/\[(\d+)\]/)[1]) }] }], ...over });
   const withWriter = (a: any, write: any) => { const m = a.model(); a.model = () => ({ ...m, json: async (r: any) => (r.name === 'write' ? write(r) : m.json(r)) }); };
