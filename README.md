@@ -1,25 +1,41 @@
 # Outlevo Community
 
-**The open-source AI SDR for B2B. An alternative to 11x, Artisan and Apollo's outreach, from your website to a meeting in your calendar. It runs on your machine, and its emails are built on quotes from each company's own site, checked before they can go.**
+**Install it, give it your website, get your sales pack: who to sell to, companies that fit, and emails ready to send, each built on a quote from that company's own site.**
 
-The software is free. **You bring:** an Anthropic API key, a mailbox on a separate domain you own, and a source of contacts (your own Hunter key or a list). If you would rather have mailboxes and contacts ready to go, that is [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme), from $29 a month.
+The open-source alternative to 11x, Artisan and Apollo's outreach. It runs on your machine and sends nothing until you say so.
 
 ```bash
 outlevo start https://yourcompany.com
 ```
 
-That reads your site, works out who buys, finds companies that fit, researches them, finds the right person, writes the emails and stops for your review. It sends nothing.
+It finds the companies itself. Your own list is optional. You need one thing to start: an [Anthropic API key](https://console.anthropic.com/), which you pay for by use.
 
 ```
-$ outlevo review
-#1 Dana Reed <dana@northwind.com> at northwind.com [pending]
-  1. Austin AE hires
-     Saw you are hiring 4 account executives in Austin. We help new reps
-     find their first accounts. Who owns ramp for them?
-     source: "We are hiring 4 account executives in Austin" https://northwind.com/careers
+sales-pack/
+  index.html          everything on one page: open this first
+  ideal-customer.md   who to sell to, and why
+  companies.csv       each company: why it fits, who to write to, the quote and its source, the emails
+  emails/             3 emails per company, with sources
 ```
 
-An illustration with a made-up company. Nothing goes out until you run `outlevo approve 1` or press Approve in the dashboard.
+What each company looks like in it, with a made-up example:
+
+```
+Northwind                                       write to: Head of Sales
+Why: they are hiring sellers
+
+Subject: Austin AE hires
+Saw you are hiring 4 account executives in Austin. We help new reps find
+their first accounts. Who owns ramp for them?
+
+"We are hiring 4 account executives in Austin"   https://northwind.example/careers
+```
+
+## Then, three ways to send
+
+1. **Yourself, free.** Copy the emails, or load `companies.csv` into the tool you use.
+2. **From your own mailbox with this tool, free.** You bring a mailbox on a separate domain and a source of contacts (your Hunter key or a list). It sends what you approve, reads replies, offers your calendar and counts meetings. See [From approved email to meeting](#from-approved-email-to-meeting).
+3. **With [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme), from $29 a month.** Verified contacts and warmed-up mailboxes, ready to go, running while your laptop is closed.
 
 > **Status: early.** The checks, limits and guards have tests. It has not yet been run end to end against a live model, a real mailbox and Hunter, so expect rough edges and start with a small list.
 
@@ -34,7 +50,7 @@ An illustration with a made-up company. Nothing goes out until you run `outlevo 
 
 ## Quick start
 
-You need Node 22.13 or newer and an [Anthropic API key](https://console.anthropic.com/).
+You need Node 22.13 or newer and an Anthropic API key.
 
 ```bash
 git clone https://github.com/1766663/outlevo-community.git && cd outlevo-community
@@ -42,13 +58,21 @@ npm install && npm run build && npm link
 
 mkdir my-outbound && cd my-outbound
 export ANTHROPIC_API_KEY=...
-export HUNTER_API_KEY=...     # optional: finds and verifies people with your Hunter account
 
-outlevo start https://yourcompany.com --won won.csv --lost lost.csv   # the CSVs are optional, a column named domain
-outlevo dashboard                                                     # review and approve
+outlevo start https://yourcompany.com
 ```
 
-No Hunter account? Import your own list with `outlevo contacts import people.csv` (email, first_name, last_name, title, domain). Addresses printed on a company's own site are picked up too.
+Then open `sales-pack/index.html`. Run it again any time: it carries on from where it stopped and does not pay twice for what it has done.
+
+**As many companies as you want.** It starts with 20 if you do not say; `--count 500` goes for 500, and everything in your own list gets done whatever its size. It is your key and your bill: expect about 4 model calls a company, more when an email needs a second try. To cap it, `outlevo config set model.max_calls_per_day 200`. Only sending has a ceiling, and that protects your domain, not our costs.
+
+To make it better, add what you have:
+
+```bash
+outlevo start https://yourcompany.com --won won.csv --lost lost.csv   # a column named domain
+outlevo companies import companies.csv                                # your own list, a column named domain
+outlevo contacts import people.csv                                    # email, first_name, last_name, title, domain
+```
 
 Try the rules on any email, with no key and no network:
 
@@ -58,7 +82,7 @@ outlevo check email.txt
 
 ## From approved email to meeting
 
-Connect a mailbox on a separate domain and pass the checks:
+To send from your own mailbox, add people (`export HUNTER_API_KEY=...` and `outlevo contacts find`, or `outlevo contacts import`), connect a mailbox on a separate domain, and pass the checks:
 
 ```bash
 outlevo config set sender.name "Sam Lee"
@@ -119,7 +143,7 @@ Everything is in `.outlevo/` next to where you run it, readable only by you: a S
 
 ## Model
 
-It uses the Anthropic API by default, on your own key, and stops at `model.max_calls_per_day` (200 unless you change it). Change the model with `outlevo config set model.name <id>`.
+It uses the Anthropic API by default, on your own key, with no limit unless you set `model.max_calls_per_day`. Change the model with `outlevo config set model.name <id>`.
 
 You can use a local Claude Code install instead with `outlevo config set model.provider claude-cli`. Check that your plan's terms allow this kind of use before you do.
 

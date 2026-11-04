@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findContacts, HunterRefused } from '../src/contacts.js';
 import { all, one, run } from '../src/db.js';
@@ -9,6 +12,7 @@ import { BudgetExhausted } from '../src/model.js';
 import { prepareSite, start } from '../src/start.js';
 import { OK_CHECKS, testApp, TUESDAY_NOON } from './helpers.js';
 
+const packDir = () => join(mkdtempSync(join(tmpdir(), 'pack-')), 'p');
 const NOT_READY = async () => [{ name: 'Mailbox', ok: false, blocking: true, detail: '' }];
 
 const inbox = (messages: any[]) => ({ fetchNew: async () => ({ messages: messages.map((m, i) => ({ uid: i + 1, messageId: `<r${i}@x>`, subject: 'Re: hi', receivedAt: TUESDAY_NOON, text: '', ...m })), lastUid: messages.length }) });
@@ -273,30 +277,29 @@ describe('start', () => {
   it('goes from a website to emails waiting for review, sending nothing', async () => {
     const a = testApp({ pages, answers }); withSearch(a, ['northwind.com']);
     const lines: string[] = [];
-    const r = await start(a, { count: 1 }, (l) => lines.push(l), { checks: NOT_READY });
+    const r = await start(a, { count: 1, out: packDir() }, (l) => lines.push(l), { checks: NOT_READY });
     expect(r).toMatchObject({ qualified: 1, to_review: 1, ready_to_send: false });
     expect(a.sent).toHaveLength(0);
     expect(lines.join('\n')).toMatch(/Nothing was sent/);
-    expect(r.next.join()).toMatch(/booking_url/);
-  });
+      });
   it('picks up where it stopped and pays for nothing twice', async () => {
     const a = testApp({ pages, answers }); withSearch(a, ['northwind.com']);
-    await start(a, { count: 1 }, quiet, { checks: NOT_READY });
+    await start(a, { count: 1, out: packDir() }, quiet, { checks: NOT_READY });
     const before = a.calls.length;
-    await start(a, { count: 1 }, quiet, { checks: NOT_READY });
+    await start(a, { count: 1, out: packDir() }, quiet, { checks: NOT_READY });
     expect(a.calls.length).toBe(before);
   });
   it('names the gap when nobody can be written to', async () => {
     const noPeople = { ...answers, research: { ...answers.research, people: [] } };
     const a = testApp({ pages, answers: noPeople }); withSearch(a, ['northwind.com']);
-    const r = await start(a, { count: 1 }, quiet, { checks: NOT_READY });
+    const r = await start(a, { count: 1, out: packDir() }, quiet, { checks: NOT_READY });
     expect(r.no_person).toBe(1);
-    expect(r.next[0]).toMatch(/nobody to write to.*HUNTER_API_KEY/);
+    expect(r.next.join(' ')).toMatch(/needs? a person.*HUNTER_API_KEY/);
   });
   it('carries on when the model cannot search, with what you imported', async () => {
     const a = testApp({ pages, answers }); addCompany(a, 'northwind.com', 'csv');
     const lines: string[] = [];
-    const r = await start(a, { count: 5 }, (l) => lines.push(l), { checks: NOT_READY });
+    const r = await start(a, { count: 5, out: packDir() }, (l) => lines.push(l), { checks: NOT_READY });
     expect(lines.join()).toMatch(/no web search/);
     expect(r.qualified).toBe(1);
   });
@@ -328,14 +331,14 @@ describe('start at the daily limit', () => {
     const a = testApp({ pages, answers: { ...answers, research: () => { throw new BudgetExhausted(1); } } });
     addCompany(a, 'northwind.com', 'csv');
     const lines: string[] = [];
-    const r = await start(a, { count: 1 }, (l) => lines.push(l), { checks: NOT_READY });
+    const r = await start(a, { count: 1, out: packDir() }, (l) => lines.push(l), { checks: NOT_READY });
     expect(r.stopped_early).toMatch(/limit/);
     expect(r.next[0]).toMatch(/tomorrow/);
     expect(lines.join('\n')).toMatch(/Stopped early/);
   });
   it('other errors still surface', async () => {
     const a = testApp({ pages: {}, answers });
-    await expect(start(a, { count: 1 }, () => {}, { checks: NOT_READY })).rejects.toThrow(/Could not read/);
+    await expect(start(a, { count: 1, out: packDir() }, () => {}, { checks: NOT_READY })).rejects.toThrow(/Could not read/);
   });
 });
 

@@ -77,10 +77,10 @@ export function bumpUsage(db: Db, kind: string, at: Date) {
 }
 export const usageToday = (db: Db, kind: string, at: Date) => one<{ count: number }>(db, 'select count from usage where day = ? and kind = ?', dayOf(at), kind)?.count ?? 0;
 
-/** Counts every call, and stops at the day's limit so a loop on your machine cannot run up a bill overnight. */
+/** Counts every call, and stops at the day's limit if you set one (model.max_calls_per_day). */
 export function metered(inner: Model, db: Db, limit: number, now: () => Date = () => new Date()): Model {
   const charge = (name: string) => {
-    if (usageToday(db, 'model_call', now()) >= limit) throw new BudgetExhausted(limit);
+    if (limit > 0 && usageToday(db, 'model_call', now()) >= limit) throw new BudgetExhausted(limit);
     bumpUsage(db, 'model_call', now());
     logEvent(db, now(), 'model.call', { name });
   };

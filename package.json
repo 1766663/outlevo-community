@@ -1,7 +1,7 @@
 {
   "name": "outlevo-community",
   "version": "0.1.0",
-  "description": "Open-source AI SDR for B2B, an alternative to 11x, Artisan and Apollo's outreach: from your website to a booked meeting, with a source for every claim. Runs on your machine.",
+  "description": "Give it your website, get your sales pack: who to sell to, companies that fit, and emails built on quotes from their own sites. Open-source alternative to 11x, Artisan and Apollo's outreach.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {

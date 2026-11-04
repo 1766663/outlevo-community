@@ -106,7 +106,7 @@ describe('sending at the same time', () => {
   });
   it('a failed send goes back in the queue', async () => {
     const a = testApp(); const id = seed(a); approve(a, id);
-    (a as any).mailer = () => ({ send: async () => { throw new Error('smtp down'); } });
+    (a as any).mailer = () => ({ send: async () => { throw new Error('smtp down'); }, verify: async () => true });
     await expect(send(a)).rejects.toThrow('smtp down');
     expect(one<any>(a.db, 'select status, sent_at from drafts where step = 1')).toEqual({ status: 'approved', sent_at: null });
   });

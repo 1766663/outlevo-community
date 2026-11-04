@@ -13,8 +13,8 @@ Exit codes: 0 done, 1 failed, 2 costs Cloud credits and needs `--yes`, 3 needs a
 
 ## Order of work
 
-1. `outlevo start <website>`. It does everything up to review and says what to do next. Ask for `--won` and `--lost` CSV files if the person has them: real deals give a far better ICP. It is safe to run again.
-2. If it says companies have nobody to write to: `outlevo contacts find` with `HUNTER_API_KEY`, `outlevo contacts import <csv>`, or `outlevo cloud contacts <id>`.
+1. `outlevo start <website>`. It finds companies itself, as many as `--count` says (20 if not given), and builds the sales pack in `sales-pack/`: show the person `sales-pack/index.html`. Ask for `--won` and `--lost` CSV files if they have them: real deals give a far better ICP. It is safe to run again.
+2. Only if they want to send from here, add people: `outlevo contacts find` with `HUNTER_API_KEY`, `outlevo contacts import <csv>`, or `outlevo cloud contacts <id>`.
 3. `outlevo review`, and show the person each email with its sources.
 4. `outlevo doctor`, for what stands between them and sending. Help them set up the mailbox and `booking_url`.
 5. `outlevo run`, once they have approved something. `outlevo meetings` shows what got booked.

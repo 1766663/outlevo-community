@@ -24,7 +24,7 @@ export async function findContacts(a: App, opts: { limit: number; doFetch?: type
   const buyers = getIcp(a)?.buyer_titles ?? [];
   const limit = a.config.contacts.max_lookups_per_day;
   const spend = () => {
-    if (usageToday(a.db, 'hunter_call', a.now()) >= limit) return false;
+    if (limit > 0 && usageToday(a.db, 'hunter_call', a.now()) >= limit) return false;
     bumpUsage(a.db, 'hunter_call', a.now());
     return true;
   };
