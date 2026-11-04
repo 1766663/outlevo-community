@@ -1,11 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { all, one, run } from '../src/db.js';
 import { buildPack } from '../src/pack.js';
 import { DEFAULTS } from '../src/config.js';
-import { addCompany, addContact, approve, discoverCompanies, dropCompany, learnIcp, learnProduct, nextToWrite, rewriteEmails, researchCompany, writeForCompany, writeSequence } from '../src/pipeline.js';
+import { addCompany, addContact, approve, discoverCompanies, dropCompany, learnIcp, learnProduct, nextToWrite, rewriteEmails, researchCompany, reviewQueue, writeForCompany, writeSequence } from '../src/pipeline.js';
+import { suppress } from '../src/compliance.js';
 import { start } from '../src/start.js';
 import { testApp } from './helpers.js';
 
@@ -34,7 +35,7 @@ describe('start makes a sales pack', () => {
     const lines: string[] = [];
     const r = await start(a, { count: 1, out: dir }, (l) => lines.push(l), { checks: NOT_READY });
     expect(r.pack.companies).toBe(1);
-    expect(readdirSync(dir).sort()).toEqual(['companies.csv', 'emails', 'ideal-customer.md', 'index.html']);
+    expect(readdirSync(dir).filter((f) => !f.startsWith('.')).sort()).toEqual(['companies.csv', 'emails', 'ideal-customer.md', 'index.html']);
     const mail = readFileSync(join(dir, 'emails', 'northwind.com.md'), 'utf8');
     expect(mail).toContain('Write to: Head of Sales');
     expect(mail).toContain('"We are hiring account executives in Austin" https://northwind.com/');
@@ -175,6 +176,91 @@ describe('drop', () => {
     dropCompany(a, 'northwind.com', true);
     expect(buildPack(a, out()).companies).toBe(1);
     expect(() => dropCompany(a, 'northwind.com', true)).toThrow(/not dropped/);
+  });
+  it('--undo brings a person\'s emails back for approval, and approval is not kept', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' });
+    const [who] = nextToWrite(a, 5); await writeSequence(a, who!); approve(a, who!);
+    dropCompany(a, 'northwind.com');
+    expect(dropCompany(a, 'northwind.com', true).restored).toBe(3);
+    expect(all<any>(a.db, 'select distinct status from drafts').map((d) => d.status)).toEqual(['pending']);
+    expect(reviewQueue(a).length).toBe(1);
+  });
+  it('--undo does not bring back emails that failed the checks as if they passed, or anyone who opted out meanwhile', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' }); const dana = nextToWrite(a, 5)[0]!;
+    await writeSequence(a, dana);
+    run(a.db, "update drafts set status = 'blocked' where contact_id = ?", dana);
+    dropCompany(a, 'northwind.com'); dropCompany(a, 'northwind.com', true);
+    expect(all<any>(a.db, 'select distinct status from drafts').map((d) => d.status)).toEqual(['blocked']);
+    dropCompany(a, 'northwind.com');
+    suppress(a, 'dana@northwind.com', 'asked to stop');
+    expect(dropCompany(a, 'northwind.com', true).restored).toBe(0);
+    expect(all<any>(a.db, 'select distinct status from drafts').map((d) => d.status)).toEqual(['cancelled']);
+  });
+  it('writing again for someone already approved says so, and costs nothing', async () => {
+    const { a, id } = await prepared();
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' }); const dana = nextToWrite(a, 5)[0]!;
+    await writeSequence(a, dana); approve(a, dana);
+    const before = a.calls.length;
+    await expect(writeSequence(a, dana)).rejects.toThrow(/already approved, sent or stopped/);
+    expect(a.calls.length).toBe(before);
+  });
+});
+
+describe('the pack folder', () => {
+  it('will not replace files it did not make, and says so before any paid work', async () => {
+    const dir = out(); mkdirSync(join(dir, 'emails'), { recursive: true }); writeFileSync(join(dir, 'emails', 'mine.txt'), 'x');
+    const a = withSearch(testApp({ pages, answers }), ['northwind.com']);
+    await expect(start(a, { count: 1, out: dir }, () => {}, { checks: NOT_READY })).rejects.toThrow(/already has emails/);
+    expect(a.calls.length).toBe(0);
+    expect(readFileSync(join(dir, 'emails', 'mine.txt'), 'utf8')).toBe('x');
+  });
+  it('replaces its own, and leaves nothing half built', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id); const dir = out();
+    buildPack(a, dir); dropCompany(a, 'northwind.com'); buildPack(a, dir);
+    expect(readdirSync(join(dir, 'emails'))).toEqual([]);
+    expect(existsSync(join(dir, '.pack-building'))).toBe(false);
+  });
+  it('marks what was sent and stops saying nothing was', async () => {
+    const { a, id } = await prepared(); const dir = out();
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' }); const dana = nextToWrite(a, 5)[0]!;
+    await writeSequence(a, dana);
+    expect(readFileSync(buildPack(a, dir).index, 'utf8')).toContain('Nothing has been sent');
+    run(a.db, "update drafts set status = 'sent' where step = 1");
+    const html = readFileSync(buildPack(a, dir).index, 'utf8');
+    expect(html).not.toContain('Nothing has been sent');
+    expect(html).toContain('already sent');
+    expect(readFileSync(join(dir, 'emails', 'northwind.com.md'), 'utf8')).toContain('First email (already sent)');
+  });
+  it('shows the source of a follow-up too', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    run(a.db, "update company_emails set claims = (select claims from company_emails where step = 1) where step = 2");
+    const html = readFileSync(buildPack(a, out()).index, 'utf8');
+    expect(html.split('We are hiring account executives in Austin').length).toBe(3);
+  });
+});
+
+describe('start says what is missing', () => {
+  it('names what could not be read, and tries it again', async () => {
+    const a = withSearch(testApp({ pages, answers }), ['northwind.com', 'unreachable.com']); const lines: string[] = [];
+    const r = await start(a, { count: 2, out: out() }, (l) => lines.push(l), { checks: NOT_READY });
+    expect(r.pack.unreadable).toEqual(['unreachable.com']);
+    expect(lines.join('\n')).toContain('Could not read: unreachable.com');
+    expect(lines.join('\n')).toContain('You asked for 2 and have 1');
+    (a as any).pages = pages;
+    const lines2: string[] = [];
+    await start(a, { count: 2, out: out() }, (l) => lines2.push(l), { checks: NOT_READY });
+    expect(lines2.join('\n')).toContain('unreachable.com: error');
+  });
+  it('a dropped company does not count toward what you asked for', async () => {
+    const domains = ['northwind.com']; const a = withSearch(testApp({ pages: { ...pages, 'https://globex.com/': { ...pages['https://northwind.com/'], url: 'https://globex.com/' } }, answers: { ...answers, research: (r: any) => ({ ...answers.research, facts: [{ ...answers.research.facts[0], source_url: r.user.includes('globex') ? 'https://globex.com/' : 'https://northwind.com/' }] }) } }), domains);
+    await start(a, { count: 1, out: out() }, () => {}, { checks: NOT_READY });
+    dropCompany(a, 'northwind.com'); domains.splice(0, 1, 'globex.com');
+    const m = a.model(); a.model = () => ({ ...m, searchJson: async () => ({ companies: [{ name: 'G', domain: 'globex.com', why: 'x' }] }) });
+    const r = await start(a, { count: 1, out: out() }, () => {}, { checks: NOT_READY });
+    expect(r.pack.companies).toBe(1);
+    expect(existsSync(join(r.pack.dir, 'emails', 'globex.com.md'))).toBe(true);
   });
 });
 

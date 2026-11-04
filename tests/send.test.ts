@@ -274,6 +274,10 @@ describe('readiness', () => {
     const a = testApp(); a.config.sender.postal_address = '';
     expect((await readiness(a, dns({}))).find((x) => x.name === 'Postal address')?.ok).toBe(false);
   });
+  it('a hand-edited postal address that is not text reads as missing, and does not crash', async () => {
+    const a = testApp(); (a.config.sender as any).postal_address = 42;
+    expect((await readiness(a, dns({}))).find((x) => x.name === 'Postal address')?.ok).toBe(false);
+  });
 });
 
 describe('replies', () => {

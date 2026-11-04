@@ -70,8 +70,10 @@ Not quite right? Change it in words, or take a company out. The pack updates, an
 
 ```bash
 outlevo rewrite northwind.com "shorter, and no question at the end"
-outlevo drop northwind.com
+outlevo drop northwind.com          # --undo puts it back
 ```
+
+A rewrite that fails the checks keeps the old emails. Approved emails that are rewritten need approving again, and once a company's first email has gone, its emails can no longer be rewritten. The pack is rebuilt whole each time, so edit a copy if you want to keep your changes. It never replaces files it did not make: choose another folder with `--out`.
 
 To make it better, add what you have:
 

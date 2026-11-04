@@ -29,8 +29,8 @@ Start here
                                    Your sales pack: who to sell to, companies, emails. Sends nothing
                                    --count is how many companies to reach, as many as you like (20 if not given)
   pack [--out sales-pack]          Build the pack again from what is here
-  rewrite <company> "what to change"   Rewrite its emails. They go through every check again
-  drop <company> [--undo]          Take a company out of the pack and the queue
+  rewrite <company> "what to change"   Rewrite its emails. They go through every check again, and approved ones need approving again
+  drop <company> [--undo]          Take a company out of the pack and the queue. --undo puts it back
   start <another-site> --relearn   Switch this folder to another product
 Know your market
   product learn [URL]              Read your website
@@ -151,14 +151,18 @@ async function main() {
         return;
       }
       const p = buildPack(a, flags.out);
-      return output({ ...r, pack: p.index }, [...r.emails.map((e, i) => `${i + 1}. ${e.subject}\n${e.body}`), `\nUpdated: ${p.index}. If these were approved, they wait for your approval again.`].join('\n\n'));
+      return output({ ...r, pack: p.index }, [...r.emails.map((e, i) => `${i + 1}. ${e.subject}\n${e.body}`), `\nUpdated: ${p.index}.${r.approval_reset ? ' These had been approved, so they wait for your approval again.' : ''}`].join('\n\n'));
     }
     case 'drop': {
       const r = dropCompany(a, need(sub, 'a company: outlevo drop northwind.com'), !!flags.undo);
       const p = buildPack(a, flags.out);
-      return output({ ...r, pack: p.index }, `${r.domain} is ${r.status === 'dropped' ? 'out of your pack and queue' : 'back: run outlevo pack after it has emails'}. Pack: ${p.companies} companies.`);
+      return output({ ...r, pack: p.index }, `${r.domain} is ${r.status === 'dropped' ? 'out of your pack and queue' : `back${r.restored ? `, and ${r.restored} ${r.restored === 1 ? 'email waits' : 'emails wait'} for your approval again` : ''}`}. Pack: ${p.companies} companies.`);
     }
-    case 'pack': { const r = buildPack(a, flags.out); return output(r, `${r.companies} companies in ${r.index}${r.blocked ? `. ${r.blocked} left out: their emails failed the checks` : ''}`); }
+    case 'pack': {
+      if (!one(a.db, 'select 1 from product') && !one(a.db, 'select 1 from companies')) throw new Error('Nothing to pack yet. Run: outlevo start https://yourcompany.com');
+      const r = buildPack(a, flags.out);
+      return output(r, [`${r.companies} companies in ${r.index}`, ...(r.failed.length ? [`Left out, their emails failed the checks: ${r.failed.join(', ')}`] : []), ...(r.unfinished.length ? [`Not finished, outlevo start carries on: ${r.unfinished.join(', ')}`] : []), ...(r.unreadable.length ? [`Could not be read: ${r.unreadable.join(', ')}`] : [])].join('\n'));
+    }
     case 'meetings': {
       if (sub === 'add') { addMeeting(a, idOf(arg, 'A contact id'), 'manual', null); return output({ added: true }, 'Recorded.'); }
       const rows = all<any>(a.db, `select m.id, m.status, m.source, m.booked_at, p.first_name, p.last_name, p.email, c.domain from meetings m join contacts p on p.id = m.contact_id join companies c on c.id = p.company_id order by m.booked_at desc`);
