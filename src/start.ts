@@ -4,13 +4,14 @@ import { type Check, ready, readiness } from './compliance.js';
 import { normalizeDomain } from './csv.js';
 import { all, logEvent, one, run } from './db.js';
 import { BudgetExhausted } from './model.js';
-import { buildPack } from './pack.js';
+import { buildPack, checkPackFolder } from './pack.js';
 import { companiesToWrite, discoverCompanies, getIcp, learnIcp, learnProduct, nextToWrite, researchCompany, reviewQueue, writeForCompany, writeSequence } from './pipeline.js';
 
 export type StartOptions = { count: number; won?: string; lost?: string; brief?: string; out?: string };
 
 const WORKERS = 4;
 const UNLIMITED = 1_000_000;
+const SEARCH_PASSES = 3;
 /** A first run is many slow model calls. A few at a time turns an hour into minutes. */
 async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>) {
   let next = 0; let failed: unknown;
@@ -41,6 +42,15 @@ export function prepareSite(a: App, site: string, relearn: boolean) {
 export async function start(a: App, o: StartOptions, say: (line: string) => void, deps: { checks?: () => Promise<Check[]> } = {}) {
   const stopped = (e: unknown) => { if (e instanceof BudgetExhausted) throw e; return (e as Error).message; };
   let stoppedEarly: string | null = null;
+  checkPackFolder(o.out);
+  // New ones, and those whose site could not be read last time: a failed read costs no model call.
+  const research = async (where: string) => {
+    const fresh = all<{ id: number; domain: string }>(a.db, `select id, domain from companies where ${where} order by id`);
+    if (fresh.length) say(`Researching ${fresh.length} companies from their own sites…`);
+    await pool(fresh, WORKERS, async (c) => {
+      try { const r = await researchCompany(a, c.id); say(`  ${c.domain}: ${r.status}`); } catch (e) { say(`  ${c.domain}: ${stopped(e)}`); }
+    });
+  };
 
   try {
     if (!one(a.db, 'select 1 from product')) {
@@ -57,16 +67,17 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
       }
       say(`  ${icp.summary}\n  Buyers: ${icp.buyer_titles.join(', ')}`);
     }
-    const have = one<{ n: number }>(a.db, 'select count(*) as n from companies')?.n ?? 0;
-    if (have < o.count) {
-      say(`Looking for ${o.count - have} companies that fit…`);
-      try { say(`  Found ${(await discoverCompanies(a, o.count - have, o.brief)).added.length}.`); } catch (e) { say(`  ${stopped(e)}`); }
+    await research("status in ('new', 'error')");
+    // The count is what you get, so a company that did not fit, could not be read or was dropped is searched for again. A few passes, then the summary says what is short.
+    for (let pass = 0; pass < SEARCH_PASSES; pass++) {
+      const short = o.count - (one<{ n: number }>(a.db, "select count(*) as n from companies where status in ('new', 'qualified')")?.n ?? 0);
+      if (short <= 0) break;
+      say(`Looking for ${short} companies that fit…`);
+      let added: string[] = [];
+      try { added = (await discoverCompanies(a, short, o.brief)).added; say(`  Found ${added.length}${added.length ? `: ${added.join(', ')}` : ''}.`); } catch (e) { say(`  ${stopped(e)}`); }
+      if (!added.length) break;
+      await research("status = 'new'");
     }
-    const fresh = all<{ id: number; domain: string }>(a.db, "select id, domain from companies where status = 'new' order by id");
-    if (fresh.length) say(`Researching ${fresh.length} companies from their own sites…`);
-    await pool(fresh, WORKERS, async (c) => {
-      try { const r = await researchCompany(a, c.id); say(`  ${c.domain}: ${r.status}`); } catch (e) { say(`  ${c.domain}: ${stopped(e)}`); }
-    });
     if (a.secrets.hunter_key) {
       say('Finding the right person at each company with your Hunter key…');
       try { const r = await findContacts(a, { limit: UNLIMITED }); say(`  ${r.added} verified, ${r.not_verified} not verified and left out.`); }
@@ -75,7 +86,7 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
     const people = nextToWrite(a, UNLIMITED); const nobody = companiesToWrite(a, UNLIMITED);
     if (people.length + nobody.length) say(`Writing emails for ${people.length + nobody.length} companies…`);
     await pool(people, WORKERS, async (id) => {
-      try { const r = await writeSequence(a, id); say(`  Contact ${id}: ${r.status === 'blocked' ? 'failed the checks' : 'ready'}`); } catch (e) { say(`  Contact ${id}: ${stopped(e)}`); }
+      try { const r = await writeSequence(a, id); say(`  ${r.domain}: ${r.status === 'blocked' ? 'failed the checks' : 'ready'}`); } catch (e) { say(`  Contact ${id}: ${stopped(e)}`); }
     });
     await pool(nobody, WORKERS, async (id) => {
       try { const r = await writeForCompany(a, id); say(`  ${r.domain}: ${r.status === 'blocked' ? 'failed the checks' : 'ready'}`); } catch (e) { say(`  Company ${id}: ${stopped(e)}`); }
@@ -96,6 +107,13 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
 
   const next: string[] = [];
   if (stoppedEarly) next.push(`${stoppedEarly}. Run this again tomorrow, or raise model.max_calls_per_day, and it carries on from here.`);
+  if (pack.companies < o.count) {
+    const outOf = (status: string) => one<{ n: number }>(a.db, 'select count(*) as n from companies where status = ?', status)?.n ?? 0;
+    next.push(`You asked for ${o.count} and have ${pack.companies}. Did not fit: ${outOf('disqualified')}. Dropped by you: ${outOf('dropped')}.${outOf('new') + outOf('qualified') < o.count ? ' Run this again to search for more.' : ''}`);
+  }
+  if (pack.failed.length) next.push(`Emails failed the checks, so these are left out: ${pack.failed.join(', ')}. Try: outlevo rewrite ${pack.failed[0]} "what to change"`);
+  if (pack.unfinished.length) next.push(`Not finished: ${pack.unfinished.join(', ')}. Run this again to carry on.`);
+  if (pack.unreadable.length) next.push(`Could not read: ${pack.unreadable.join(', ')}. Run this again to try once more.`);
   next.push(`Open your pack: ${pack.index}`);
   if (noPerson) next.push(`To send: ${noPerson} ${noPerson === 1 ? 'company needs' : 'companies need'} a person. Set HUNTER_API_KEY and run outlevo contacts find, import a list with outlevo contacts import, or use outlevo cloud contacts.`);
   if (toReview) next.push(`Approve what goes out: outlevo review, or outlevo dashboard for a page in your browser.`);

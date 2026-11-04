@@ -23,6 +23,7 @@ create table if not exists drafts (
   subject text not null, body text not null, claims text not null, angle text, delay_days integer not null default 0,
   lint text not null, status text not null check (status in ('pending','approved','rejected','blocked','sent','cancelled')),
   created_at text not null, approved_at text, sent_at text, message_id text, unique (contact_id, step));
+create table if not exists dropped_drafts (draft_id integer primary key references drafts(id) on delete cascade, was text not null);
 create table if not exists company_emails (
   id integer primary key, company_id integer not null references companies(id) on delete cascade, step integer not null,
   subject text not null, body text not null, claims text not null, angle text, delay_days integer not null default 0,

@@ -3,6 +3,7 @@ import { type App, arr, nullable, obj, S, UNTRUSTED, untrusted } from './app.js'
 import { normalizeDomain, parseCsv } from './csv.js';
 import { all, logEvent, one, run } from './db.js';
 import { type Page, quoteIsOn } from './fetcher.js';
+import { isSuppressed } from './compliance.js';
 import { type Claim, hasErrors, type KnownFact, lintEmail, type LintIssue } from './lint.js';
 
 const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000;
@@ -305,6 +306,7 @@ export async function writeSequence(a: App, contactId: number) {
     `select p.id, p.first_name, p.last_name, p.title, c.id as company_id, c.domain, c.name, c.status from contacts p join companies c on c.id = p.company_id where p.id = ?`, contactId);
   if (!row) throw new Error(`No contact ${contactId}`);
   if (row.status !== 'qualified') throw new Error(`${row.domain} is ${row.status}; only qualified companies get emails`);
+  if (one(a.db, "select 1 from drafts where contact_id = ? and status in ('approved','sent','cancelled')", contactId)) throw new Error(`The emails to contact ${contactId} were already approved, sent or stopped, so they are not written again. To change unsent ones: outlevo rewrite ${row.domain} "what to change"`);
 
   // Emails already written for this company carry no name, so they fit whoever turns up: no second bill.
   const ready = all<{ step: number; subject: string; body: string; claims: string; angle: string | null; delay_days: number; lint: string }>(a.db, 'select step, subject, body, claims, angle, delay_days, lint from company_emails where company_id = ? and blocked = 0 order by step', row.company_id);
@@ -323,7 +325,7 @@ export async function writeSequence(a: App, contactId: number) {
     a.db.exec('commit');
   } catch (e) { a.db.exec('rollback'); throw e; }
   logEvent(a.db, a.now(), 'sequence.written', { contact_id: contactId, blocked, reused: ready.length > 0 });
-  return { contact_id: contactId, status: blocked ? 'blocked' : 'pending', issues: errors };
+  return { contact_id: contactId, domain: row.domain, status: blocked ? 'blocked' : 'pending', issues: errors };
 }
 
 const companyByRef = (a: App, ref: string) => {
@@ -341,7 +343,7 @@ export async function rewriteEmails(a: App, ref: string, instruction: string) {
   const c = companyByRef(a, ref);
   if (c.status !== 'qualified') throw new Error(`${c.domain} is ${c.status}; only qualified companies have emails`);
   if (one(a.db, "select 1 from drafts d join contacts p on p.id = d.contact_id where p.company_id = ? and d.status = 'sent'", c.id)) throw new Error(`Emails to ${c.domain} have already started, so they can no longer be rewritten`);
-  const draft = all<{ contact_id: number; subject: string; body: string }>(a.db, "select d.contact_id, d.subject, d.body from drafts d join contacts p on p.id = d.contact_id where p.company_id = ? and d.status in ('pending','approved','blocked') order by d.step", c.id);
+  const draft = all<{ contact_id: number; subject: string; body: string; status: string }>(a.db, "select d.contact_id, d.subject, d.body, d.status from drafts d join contacts p on p.id = d.contact_id where p.company_id = ? and d.status in ('pending','approved','blocked') order by d.step", c.id);
   const own = all<{ subject: string; body: string; to_title: string | null }>(a.db, 'select subject, body, to_title from company_emails where company_id = ? order by step', c.id);
   const emails = draft.length ? draft : own;
   if (!emails.length) throw new Error(`${c.domain} has no emails yet. Run: outlevo start, or outlevo write`);
@@ -349,7 +351,7 @@ export async function rewriteEmails(a: App, ref: string, instruction: string) {
   const to = person ? `${person.first_name} ${person.last_name ?? ''}, ${person.title ?? 'job unknown'}` : own[0]?.to_title ?? getIcp(a)?.buyer_titles[0] ?? 'the person who owns this problem';
   const w = await compose(a, { domain: c.domain, company: c.name, company_id: c.id, to, change: { instruction, emails } });
   const errors = w.issues.flat().filter((x) => x.level === 'error');
-  if (w.blocked) { logEvent(a.db, a.now(), 'emails.rewrite_refused', { company_id: c.id }); return { domain: c.domain, rewritten: false, issues: errors, emails: [] as typeof w.emails }; }
+  if (w.blocked) { logEvent(a.db, a.now(), 'emails.rewrite_refused', { company_id: c.id }); return { domain: c.domain, rewritten: false, approval_reset: false, issues: errors, emails: [] as typeof w.emails }; }
   a.db.exec('begin');
   try {
     if (draft[0]) {
@@ -363,7 +365,7 @@ export async function rewriteEmails(a: App, ref: string, instruction: string) {
     a.db.exec('commit');
   } catch (e) { a.db.exec('rollback'); throw e; }
   logEvent(a.db, a.now(), 'emails.rewritten', { company_id: c.id });
-  return { domain: c.domain, rewritten: true, issues: [] as LintIssue[], emails: w.emails };
+  return { domain: c.domain, rewritten: true, approval_reset: draft.some((d) => d.status === 'approved'), issues: [] as LintIssue[], emails: w.emails };
 }
 
 /** Takes a company out of the pack and the queue. It stays known, so a later search does not bring it back. */
@@ -372,13 +374,21 @@ export function dropCompany(a: App, ref: string, undo = false) {
   if (undo) {
     if (c.status !== 'dropped') throw new Error(`${c.domain} is not dropped`);
     run(a.db, "update companies set status = 'qualified' where id = ?", c.id);
+    // Only what the drop stopped comes back, and it waits for a person again. Whoever answered, bounced or opted out meanwhile stays stopped.
+    const held = all<{ id: number; was: string; email: string }>(a.db, `select d.id, h.was, p.email from dropped_drafts h join drafts d on d.id = h.draft_id join contacts p on p.id = d.contact_id
+      where p.company_id = ? and p.status = 'active' and not exists (select 1 from replies r where r.contact_id = p.id)
+        and not exists (select 1 from meetings m join contacts q on q.id = m.contact_id where q.company_id = p.company_id and m.status = 'booked')`, c.id);
+    const back = held.filter((d) => !isSuppressed(a, d.email));
+    for (const d of back) run(a.db, 'update drafts set status = ? where id = ?', d.was === 'blocked' ? 'blocked' : 'pending', d.id);
+    run(a.db, 'delete from dropped_drafts where draft_id in (select d.id from drafts d join contacts p on p.id = d.contact_id where p.company_id = ?)', c.id);
     logEvent(a.db, a.now(), 'company.restored', { company_id: c.id });
-    return { domain: c.domain, status: 'qualified' };
+    return { domain: c.domain, status: 'qualified', restored: back.length };
   }
   run(a.db, "update companies set status = 'dropped' where id = ?", c.id);
+  run(a.db, "insert or replace into dropped_drafts (draft_id, was) select id, status from drafts where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.id);
   run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.id);
   logEvent(a.db, a.now(), 'company.dropped', { company_id: c.id });
-  return { domain: c.domain, status: 'dropped' };
+  return { domain: c.domain, status: 'dropped', restored: 0 };
 }
 
 /** Qualified companies with no emails yet and nobody to write to. */
