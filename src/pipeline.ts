@@ -228,12 +228,28 @@ Only state what the facts say. Each statement about the prospect is a claim: cop
   return { contact_id: contactId, status: blocked ? 'blocked' : 'pending', issues: issues.flat().filter((x) => x.level === 'error') };
 }
 
-/** The person to write to next: emails we may send to, at qualified companies, one per company, not yet written. */
+const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 1 && !['of', 'the', 'and', 'for'].includes(w)));
+/** How close a job title is to the buyers in the ICP: the share of a buyer title's words it contains. */
+export function titleFit(title: string | null, buyers: string[]): number {
+  if (!title) return 0;
+  const t = words(title);
+  return Math.max(0, ...buyers.map((b) => { const w = [...words(b)]; return w.length ? w.filter((x) => t.has(x)).length / w.length : 0; }));
+}
+
+/** Who to write to next: at each qualified company nobody has been written to at, the usable address closest to the ICP's buyers. */
 export function nextToWrite(a: App, limit: number) {
-  return all<{ id: number }>(a.db, `select min(p.id) as id from contacts p join companies c on c.id = p.company_id
+  const buyers = getIcp(a)?.buyer_titles ?? [];
+  const rows = all<{ id: number; company_id: number; title: string | null }>(a.db, `select p.id, p.title, c.id as company_id from contacts p join companies c on c.id = p.company_id
     where c.status = 'qualified' and p.status = 'active' and p.email_source in ('imported','published','verified')
       and not exists (select 1 from drafts d join contacts q on q.id = d.contact_id where q.company_id = c.id)
-    group by c.id order by coalesce(c.score, 0) desc limit ?`, limit).map((r) => r.id);
+    order by coalesce(c.score, 0) desc, c.id, p.id`);
+  const best = new Map<number, { id: number; fit: number }>();
+  for (const r of rows) {
+    const fit = titleFit(r.title, buyers);
+    const cur = best.get(r.company_id);
+    if (!cur || fit > cur.fit) best.set(r.company_id, { id: r.id, fit });
+  }
+  return [...best.values()].slice(0, limit).map((b) => b.id);
 }
 
 export function reviewQueue(a: App) {

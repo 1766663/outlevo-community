@@ -5,24 +5,21 @@
 The open alternative to closed AI SDRs like 11x and Artisan. You can read every rule it follows, see every email before it goes, and change anything.
 
 ```
-$ outlevo run
-Researched northwind.com: qualified (82)
-Wrote 3 emails for Dana Reed, Head of Sales
-
-  Saw you are hiring 4 account executives in Austin. We help new reps find
-  their first accounts. Who owns ramp for them?
-
-  source: "We are hiring 4 account executives in Austin"
-          https://northwind.com/careers
-
-Waiting for your approval. Nothing sends without you.
+$ outlevo review
+#1 Dana Reed <dana@northwind.com> at northwind.com [pending]
+  1. Austin AE hires
+     Saw you are hiring 4 account executives in Austin. We help new reps
+     find their first accounts. Who owns ramp for them?
+     source: "We are hiring 4 account executives in Austin" https://northwind.com/careers
 ```
+
+An illustration with a made-up company. Nothing goes out until you run `outlevo approve 1` or press Approve in the dashboard.
 
 ## What makes it different
 
 - **Claims are checked by code, not trusted.** A fact is kept only if its quote is really on the page it names. A number in an email must appear in a fact that email cites. If an email breaks a rule, the model gets one more try. After that the email is blocked and cannot be approved.
 - **It learns from your deals.** Give it the companies you won and lost, and the ICP comes from what they show, not from a filter list.
-- **B2B first.** It looks for the person who owns the problem at a company, and writes to one person per company at a time.
+- **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
 - **Nothing sends without you.** Every sequence waits for your approval. The answers it drafts to replies wait too. Community has no autopilot.
 - **Safe by default.** See [The rules it will not break](#the-rules-it-will-not-break).
 
@@ -140,4 +137,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 
-[AGPL-3.0-only](LICENSE). "Outlevo" is a trademark of REALTY.TM GROUP sp. z o.o.; the license does not grant rights to the name or logo.
+[AGPL-3.0-only](LICENSE). The license does not grant rights to the Outlevo name or logo.

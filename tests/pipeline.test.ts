@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { all, one } from '../src/db.js';
-import { addCompany, addContact, approve, learnIcp, learnProduct, nextToWrite, researchCompany, reviewQueue, writeSequence } from '../src/pipeline.js';
+import { addCompany, addContact, approve, learnIcp, learnProduct, nextToWrite, researchCompany, reviewQueue, titleFit, writeSequence } from '../src/pipeline.js';
 import { sendNext } from '../src/send.js';
 import { cycle } from '../src/loop.js';
 import { OK_CHECKS, testApp } from './helpers.js';
@@ -118,6 +118,16 @@ describe('writing', () => {
     a.db.exec('delete from contacts');
     addContact(a, { company_id: company, first_name: 'Guess', email: 'first@northwind.com', email_source: 'guess' });
     expect(nextToWrite(a, 5)).toEqual([]);
+  });
+  it('picks the person closest to the ICP buyers, not the first one found', async () => {
+    const { a, company } = await ready();
+    a.db.exec('delete from contacts');
+    addContact(a, { company_id: company, first_name: 'Office', title: 'Office Manager', email: 'office@northwind.com', email_source: 'imported' });
+    addContact(a, { company_id: company, first_name: 'Dana', title: 'Head of Sales, Americas', email: 'dana@northwind.com', email_source: 'imported' });
+    const id = one<any>(a.db, "select id from contacts where email = 'dana@northwind.com'").id;
+    expect(nextToWrite(a, 5)).toEqual([id]);
+    expect(titleFit('Office Manager', ['Head of Sales'])).toBe(0);
+    expect(titleFit(null, ['Head of Sales'])).toBe(0);
   });
   it('writes to one person per company', async () => {
     const { a, company } = await ready();
