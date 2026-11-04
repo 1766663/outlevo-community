@@ -72,7 +72,7 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
     for (let pass = 0; pass < SEARCH_PASSES; pass++) {
       const short = o.count - (one<{ n: number }>(a.db, "select count(*) as n from companies where status in ('new', 'qualified')")?.n ?? 0);
       if (short <= 0) break;
-      say(`Looking for ${short} companies that fit…`);
+      say(`Looking for ${short} ${short === 1 ? 'company' : 'companies'} that fit…`);
       let added: string[] = [];
       try { added = (await discoverCompanies(a, short, o.brief)).added; say(`  Found ${added.length}${added.length ? `: ${added.join(', ')}` : ''}.`); } catch (e) { say(`  ${stopped(e)}`); }
       if (!added.length) break;

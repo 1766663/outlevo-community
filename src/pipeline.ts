@@ -6,7 +6,7 @@ import { type Page, quoteIsOn } from './fetcher.js';
 import { isSuppressed } from './compliance.js';
 import { type Claim, hasErrors, type KnownFact, lintEmail, type LintIssue } from './lint.js';
 
-const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000;
+const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000; const WRITE_TRIES = 3;
 const iso = (a: App) => a.now().toISOString();
 const PAGE_WORTH: Array<[RegExp, number]> = [[/about|company|team|leadership/, 5], [/customers?|case-stud|clients/, 5], [/pricing|plans/, 4], [/careers?|jobs|hiring/, 4], [/news|press|blog|changelog|updates/, 3], [/product|platform|solutions?|features/, 2]];
 
@@ -239,7 +239,7 @@ function lintSequence(a: App, seq: Written, facts: KnownFact[], domain: string) 
 
 type Recipient = { domain: string; company: string | null; company_id: number; to: string; change?: { instruction: string; emails: Array<{ subject: string; body: string }> } };
 
-/** Three emails, by a model, then the rules, then a second reading. Refused, it gets one more try. Returned with its reasons either way. */
+/** Three emails, by a model, then the rules, then a second reading. Refused, it tries again. Returned with its reasons either way. */
 async function compose(a: App, r: Recipient) {
   const product = one<{ summary: string }>(a.db, 'select summary from product');
   const productFacts = all<{ text: string; quote: string }>(a.db, 'select text, quote from product_facts');
@@ -250,35 +250,49 @@ async function compose(a: App, r: Recipient) {
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one line, asks one easy question. No meeting request. Follow-ups: under 60 words, each adds something new, the last one closes the loop politely.
-Only state what the facts say. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
-    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
+Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
+    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
   // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.
-  const reread = async (seq: Written) => {
+  const reread = async (emails: Array<{ n: number; subject: string; body: string }>) => {
     const v = await a.model().json<{ unsupported: Array<{ email: number; statement: string }> }>({
       name: 'verify_email', effort: 'medium',
       system: `You check cold emails against quotes from a company's own website. ${UNTRUSTED} List every statement about the recipient or their company that the quotes do not plainly support, including anything hinted at. A question, or a statement about the sender, is not one. If all is supported, the list is empty.`,
-      user: `Quotes:\n${untrusted(r.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${seq.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
+      user: `Quotes:\n${untrusted(r.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${emails.map((e) => `Email ${e.n}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
       schema: obj({ unsupported: arr(obj({ email: { type: 'integer' }, statement: S })) }),
     });
     // No clear verdict is not a pass.
     if (!Array.isArray(v?.unsupported)) throw new Error(`The second check of the emails to ${r.domain} gave no clear answer`);
     return v.unsupported;
   };
-  const checked = async (seq: Written) => {
+  const checked = async (seq: Written, settled: boolean[]) => {
     const out = lintSequence(a, seq, facts, r.domain);
-    if (out.some(hasErrors)) return out;
-    for (const u of await reread(seq)) (out[Math.min(Math.max(0, (Number.isInteger(u.email) ? u.email : 1) - 1), Math.min(seq.emails.length, 3) - 1)] ??= []).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
+    const toRead = seq.emails.map((e, i) => ({ n: i + 1, subject: e.subject, body: e.body })).filter((e) => !settled[e.n - 1] && !hasErrors(out[e.n - 1]!));
+    if (!toRead.length) return out;
+    for (const u of await reread(toRead)) {
+      // A verdict naming an email it was not shown still counts, against all it was shown.
+      const hit = toRead.some((e) => e.n === u.email) ? [u.email] : toRead.map((e) => e.n);
+      for (const n of hit) out[n - 1]!.push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
+    }
     return out;
   };
-  let seq = await ask(''); let issues = await checked(seq);
-  if (issues.some(hasErrors)) {
-    const list = issues.flatMap((x, i) => x.filter((y) => y.level === 'error').map((y) => `Email ${i + 1}: ${y.message}`)).join('\n');
-    seq = await ask(`\n\nYour last try was refused:\n${list}\nFix every one of these.`);
-    issues = await checked(seq);
+  // An email that passed is kept, so a refused follow-up costs that follow-up and not the company. Without a first email there is nothing.
+  const passed: Array<{ email: Written['emails'][number]; issues: LintIssue[] } | undefined> = [];
+  let seq!: Written; let issues: LintIssue[][] = []; let feedback = '';
+  for (let tries = 0; tries < WRITE_TRIES; tries++) {
+    seq = await ask(feedback);
+    seq = { ...seq, emails: seq.emails.slice(0, 3) };
+    issues = await checked(seq, seq.emails.map((_, i) => !!passed[i]));
+    seq.emails.forEach((email, i) => { if (!passed[i] && !hasErrors(issues[i]!)) passed[i] = { email, issues: issues[i]! }; });
+    if (seq.emails.every((_, i) => passed[i])) break;
+    const kept = passed.flatMap((p, i) => p ? [`Email ${i + 1}. Subject: ${p.email.subject}\n${p.email.body}`] : []);
+    const refused = issues.flatMap((x, i) => passed[i] ? [] : x.filter((y) => y.level === 'error').map((y) => `Email ${i + 1}: ${y.message}`));
+    feedback = `\n\nYour last try was refused:\n${refused.join('\n')}\nFix every one of these, and say nothing the quotes do not say.${kept.length ? `\nThese passed. Return them word for word:\n${kept.join('\n\n')}` : ''}`;
   }
-  return { seq, emails: seq.emails.slice(0, 3), issues, blocked: issues.slice(0, 3).some(hasErrors) };
+  if (!passed[0]) return { seq, emails: seq.emails, issues, blocked: true };
+  const good = passed.filter((p) => !!p);
+  return { seq, emails: good.map((p) => p.email), issues: good.map((p) => p.issues), blocked: false };
 }
 const delayOf = (i: number, days: number) => Math.max(i === 0 ? 0 : 2, days);
 

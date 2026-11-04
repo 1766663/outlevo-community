@@ -96,14 +96,14 @@ describe('writing', () => {
     expect(q[0].emails).toHaveLength(3);
     expect(q[0].emails[0].claims[0].source.source_url).toBe('https://northwind.com/careers');
   });
-  it('tries once more, then blocks an email the rules refuse, and it cannot be approved', async () => {
+  it('tries twice more, then blocks an email the rules refuse, and it cannot be approved', async () => {
     const { a } = await ready();
     let tries = 0;
     const bad = { angle: 'x', emails: [{ subject: 'Hi', body: 'You grew 900% last year.', delay_days: 0, claims: [] }] };
     (a as any).model = () => ({ json: async (r: any) => { if (r.name === 'verify_email') return { unsupported: [] }; tries++; return bad; } });
     const [id] = nextToWrite(a, 5);
     expect((await writeSequence(a, id!)).status).toBe('blocked');
-    expect(tries).toBe(2);
+    expect(tries).toBe(3);
     expect(() => approve(a, id!)).toThrow(/cannot be approved/);
     expect((await sendNext(a, { checks: OK_CHECKS })).sent).toBe(false);
   });
