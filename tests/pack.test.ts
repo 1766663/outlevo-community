@@ -116,6 +116,36 @@ describe('second check, and printed addresses', () => {
   });
 });
 
+describe('a refused email', () => {
+  const bad = { subject: 'Numbers', body: 'You have 77 reps.', delay_days: 3, claims: [] };
+  const first = (r: any) => answers.write(r).emails[0];
+  it('costs that follow-up, not the company: the first email is kept', async () => {
+    const b = testApp({ pages, answers: { ...answers, write: (r: any) => ({ angle: 'x', emails: [first(r), answers.write(r).emails[1], bad] }) } });
+    await learnProduct(b); await learnIcp(b, {}); const c = addCompany(b, 'northwind.com', 'manual'); await researchCompany(b, c.id);
+    const r = await writeForCompany(b, c.id);
+    expect(r.status).toBe('ready');
+    expect(all<any>(b.db, 'select step, subject from company_emails order by step').map((e) => e.subject)).toEqual(['Austin hires', 'A thought']);
+    expect(all<any>(b.db, 'select blocked from company_emails').every((e) => e.blocked === 0)).toBe(true);
+  });
+  it('a first email that never passes leaves the company out', async () => {
+    const b = testApp({ pages, answers: { ...answers, write: () => ({ angle: 'x', emails: [{ ...bad, delay_days: 0 }] }) } });
+    await learnProduct(b); await learnIcp(b, {}); const c = addCompany(b, 'northwind.com', 'manual'); await researchCompany(b, c.id);
+    expect((await writeForCompany(b, c.id)).status).toBe('blocked');
+  });
+  it('the writer sees the quote, and is told it is what counts', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    const write = a.calls.find((c: any) => c.name === 'write') as any;
+    expect(write.user).toContain('Quote: We are hiring account executives in Austin');
+    expect(write.system).toContain('Only state what the quotes say');
+  });
+  it('a verdict against a follow-up does not hold back the first email', async () => {
+    const b = testApp({ pages, answers: { ...answers, verify_email: (r: any) => ({ unsupported: /Email 2\./.test(r.user) ? [{ email: 2, statement: 'made up' }] : [] }) } });
+    await learnProduct(b); await learnIcp(b, {}); const c = addCompany(b, 'northwind.com', 'manual'); await researchCompany(b, c.id);
+    await writeForCompany(b, c.id);
+    expect(all<any>(b.db, 'select subject from company_emails order by step').map((e) => e.subject)).toEqual(['Austin hires', 'Closing the loop']);
+  });
+});
+
 describe('rewrite', () => {
   const asked = (over: any = {}) => async (r: any) => ({ angle: 'hiring', emails: [{ subject: 'Short', body: 'Saw you are hiring account executives in Austin.', delay_days: 0, claims: [{ text: 'hiring account executives in Austin', fact_id: Number(r.user.match(/\[(\d+)\]/)[1]) }] }], ...over });
   const withWriter = (a: any, write: any) => { const m = a.model(); a.model = () => ({ ...m, json: async (r: any) => (r.name === 'write' ? write(r) : m.json(r)) }); };
