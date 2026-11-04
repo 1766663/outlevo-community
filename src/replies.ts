@@ -1,11 +1,18 @@
-import { ImapFlow } from 'imapflow';
+import { ImapFlow, type MailboxObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
-import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress } from './compliance.js';
+import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress, unsubscribeHeader } from './compliance.js';
 import { all, getMeta, logEvent, one, run, setMeta } from './db.js';
 
 export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
-export interface Inbox { fetchNew(sinceUid: number): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number }> }
+export interface Inbox { fetchNew(sinceUid: number, knownValidity?: string | null): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number; validity?: string }> }
+
+/**
+ * Where to read from. A mailbox that started numbering again would hide new mail below the last number read, opt-outs and bounces included.
+ * So it is read from the start: what was already handled is recognised by its Message-ID, and costs no model call.
+ */
+export const readFrom = (sinceUid: number, known: string | null | undefined, mailbox: { validity: string; uidNext: number }) =>
+  (known && known !== mailbox.validity) || mailbox.uidNext <= sinceUid ? 0 : sinceUid;
 
 const CLASSES = ['interested', 'question', 'not_now', 'wrong_person', 'unsubscribe', 'out_of_office', 'other'] as const;
 
@@ -13,21 +20,24 @@ export function imapInbox(a: App): Inbox {
   const { imap } = a.config;
   if (!imap.host || !imap.user || !a.secrets.imap_password) throw new Error('Set imap.host, imap.user and OUTLEVO_IMAP_PASSWORD so replies can be read');
   return {
-    async fetchNew(sinceUid) {
+    async fetchNew(sinceUid, knownValidity) {
       const c = new ImapFlow({ host: imap.host, port: imap.port, secure: imap.secure, auth: { user: imap.user, pass: a.secrets.imap_password! }, logger: false });
       await c.connect();
       const lock = await c.getMailboxLock('INBOX');
-      const messages: Array<Incoming & { uid: number }> = []; let lastUid = sinceUid;
+      const box = c.mailbox as MailboxObject;
+      const validity = String(box.uidValidity);
+      const start = readFrom(sinceUid, knownValidity, { validity, uidNext: box.uidNext });
+      const messages: Array<Incoming & { uid: number }> = []; let lastUid = start;
       try {
-        for await (const m of c.fetch(`${sinceUid + 1}:*`, { uid: true, source: true }, { uid: true })) {
-          if (m.uid <= sinceUid || !m.source) continue;
+        for await (const m of c.fetch(`${start + 1}:*`, { uid: true, source: true }, { uid: true })) {
+          if (m.uid <= start || !m.source) continue;
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
           messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: [p.text ?? '', ...p.attachments.filter((x) => /delivery-status|rfc822-headers/i.test(x.contentType)).map((x) => x.content.toString('utf8'))].join('\n'), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
-      return { messages, lastUid };
+      return { messages, lastUid, validity };
     },
   };
 }
@@ -131,7 +141,7 @@ function whoWrote(a: App, m: Incoming): { contact: Who | undefined; direct: bool
 /** Reads new mail. Nothing goes out from here: an answer is only ever a suggestion waiting for you. */
 export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   const since = Number(getMeta(a.db, 'imap_last_uid') ?? 0);
-  const { messages, lastUid } = await inbox.fetchNew(since);
+  const { messages, lastUid, validity } = await inbox.fetchNew(since, getMeta(a.db, 'imap_uid_validity'));
   let handled = 0;
   for (const m of messages) {
     if (handleBounce(a, m)) { handled++; continue; }
@@ -175,6 +185,7 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
     logEvent(a.db, a.now(), 'reply.received', { contact_id: contact.id, class: cls });
   }
   setMeta(a.db, 'imap_last_uid', String(lastUid));
+  if (validity) setMeta(a.db, 'imap_uid_validity', validity);
   return { read: messages.length, handled };
 }
 
@@ -191,7 +202,7 @@ export async function sendSuggestedReply(a: App, replyId: number, deps: { checks
   if (!run(a.db, "update replies set suggested_status = 'sent' where id = ? and suggested_status = 'pending'", replyId).changes) throw new Error(`Reply ${replyId} has no answer waiting`);
   const s = a.config.sender;
   try {
-    await a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), inReplyTo: r.message_id, references: r.message_id });
+    await a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), headers: unsubscribeHeader(a.config), inReplyTo: r.message_id, references: r.message_id });
   } catch (e) { run(a.db, "update replies set suggested_status = 'pending' where id = ?", replyId); throw e; }
   logEvent(a.db, a.now(), 'reply.sent', { reply_id: replyId });
   return { sent: true };

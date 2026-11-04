@@ -23,6 +23,26 @@ describe('makeFetcher', () => {
     const doFetch = (async (u: string) => (String(u).endsWith('/robots.txt') ? new Response('', { status: 404 }) : new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin' } }))) as typeof fetch;
     await expect(makeFetcher(doFetch)('https://example.com/')).rejects.toThrow(/private/);
   });
+  it('asks robots.txt of the host a redirect lands on', async () => {
+    const seen: string[] = [];
+    const doFetch = (async (u: string) => {
+      const url = String(u); seen.push(url);
+      if (url === 'https://www.example.com/robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200 });
+      if (url.endsWith('/robots.txt')) return new Response('', { status: 404 });
+      return new Response(null, { status: 301, headers: { location: 'https://www.example.com/' } });
+    }) as typeof fetch;
+    expect(await makeFetcher(doFetch)('https://example.com/')).toBeNull();
+    expect(seen).toEqual(['https://example.com/robots.txt', 'https://example.com/', 'https://www.example.com/robots.txt']);
+  });
+  it('follows a redirect that robots.txt allows', async () => {
+    const doFetch = (async (u: string) => {
+      const url = String(u);
+      if (url.endsWith('/robots.txt')) return new Response('', { status: 404 });
+      if (url === 'https://example.com/') return new Response(null, { status: 301, headers: { location: 'https://www.example.com/' } });
+      return new Response('<title>W</title>Hello', { status: 200, headers: { 'content-type': 'text/html' } });
+    }) as typeof fetch;
+    expect((await makeFetcher(doFetch)('https://example.com/'))?.url).toBe('https://www.example.com/');
+  });
   it('honours robots.txt without asking for the page', async () => {
     const seen: string[] = [];
     const doFetch = (async (u: string) => { seen.push(String(u)); return new Response('User-agent: *\nDisallow: /', { status: 200 }); }) as typeof fetch;

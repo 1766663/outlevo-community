@@ -115,10 +115,11 @@ export function robotsAllows(robots: string, path: string, agent = 'outlevocommu
   return best ? best[0] : true;
 }
 
-async function get(raw: string, doFetch: typeof fetch, accept: string): Promise<{ res: Response; url: string } | null> {
+async function get(raw: string, doFetch: typeof fetch, accept: string, allowed: (url: string) => Promise<boolean> = async () => true): Promise<{ res: Response; url: string } | null> {
   let url = raw;
   for (let hop = 0; hop < 5; hop++) {
     await assertPublicUrl(url);
+    if (!(await allowed(url))) return null;
     const res = await doFetch(url, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS), headers: { 'user-agent': USER_AGENT, accept } });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) { url = new URL(res.headers.get('location')!, url).href; continue; }
     return { res, url };
@@ -142,14 +143,17 @@ async function readCapped(res: Response): Promise<string> {
 /** One page, or null when robots.txt says no, it is not HTML, or it is not there. */
 export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
   const robots = new Map<string, string>();
-  return async (raw) => {
+  // Asked at every hop: a redirect to another host answers to that host's rules.
+  const robotsSay = async (raw: string) => {
     const u = new URL(raw);
     if (!robots.has(u.origin)) {
       const r = await get(`${u.origin}/robots.txt`, doFetch, 'text/plain').catch(() => null);
       robots.set(u.origin, r?.res.ok ? await readCapped(r.res) : '');
     }
-    if (!robotsAllows(robots.get(u.origin)!, u.pathname + u.search)) return null;
-    const r = await get(raw, doFetch, 'text/html,application/xhtml+xml');
+    return robotsAllows(robots.get(u.origin)!, u.pathname + u.search);
+  };
+  return async (raw) => {
+    const r = await get(raw, doFetch, 'text/html,application/xhtml+xml', robotsSay);
     if (!r?.res.ok || !/html|text\/plain/i.test(r.res.headers.get('content-type') ?? '')) return null;
     const html = await readCapped(r.res);
     const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];

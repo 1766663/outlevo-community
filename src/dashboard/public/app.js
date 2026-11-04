@@ -64,7 +64,7 @@ function reviewCard(g) {
       e.claims.map((c) => el('span', { class: 'source' }, c.source ? [`"${c.source.quote}" `, extLink(c.source.source_url, 'source'), ` · read ${when(c.source.fetched_at)}`] : `No source found for "${c.text}"`)),
       e.issues.map((x) => el('p', { class: `issue ${x.level}` }, x.message)))),
     el('div', { class: 'actions' },
-      !blocked && button(g.emails.length === 1 ? 'Approve this email' : `Approve these ${g.emails.length} emails`, 'go', 'Approving…', async () => { await post('/api/approve', { id: g.contact_id }); return `Approved for ${g.name}`; }),
+      !blocked && state.person && button(g.emails.length === 1 ? 'Approve this email' : `Approve these ${g.emails.length} emails`, 'go', 'Approving…', async () => { await post('/api/approve', { id: g.contact_id }); return `Approved for ${g.name}`; }),
       button(blocked ? 'Throw away' : 'Reject', '', 'Rejecting…', async () => { await post('/api/reject', { id: g.contact_id }); return 'Rejected'; })));
 }
 
@@ -142,7 +142,7 @@ const views = {
       el('pre', {}, r.text),
       r.suggested && el('div', { class: 'email' }, el('div', { class: 'small muted' }, r.suggested_status === 'sent' ? 'You sent this answer' : r.suggested_status === 'dismissed' ? 'Dismissed answer' : 'Suggested answer'), el('div', { class: 'body' }, r.suggested)),
       r.suggested_status === 'pending' && el('div', { class: 'actions' },
-        button('Send this answer', 'go', 'Sending…', async () => { await post('/api/reply/send', { id: r.id }); return 'Sent'; }),
+        state.person && button('Send this answer', 'go', 'Sending…', async () => { await post('/api/reply/send', { id: r.id }); return 'Sent'; }),
         button('Dismiss', '', 'Dismissing…', async () => { await post('/api/reply/dismiss', { id: r.id }); return null; }))))];
   },
   meetings() {
@@ -212,11 +212,11 @@ function render() {
     return el('button', { type: 'button', 'aria-current': tab === k ? 'page' : null, onclick: () => go(k) }, n ? `${label} (${n})` : label);
   }));
   document.getElementById('stop').replaceChildren(state.stopped
-    ? button('Resume sending', 'go', 'Resuming…', async () => { await post('/api/resume'); return 'Sending resumed'; })
+    ? !state.person ? '' : button('Resume sending', 'go', 'Resuming…', async () => { await post('/api/resume'); return 'Sending resumed'; })
     : button('Stop all sending', 'danger', 'Stopping…', async () => { await post('/api/stop'); return 'All sending stopped'; }));
   const main = document.getElementById('main');
   const y = window.scrollY;
-  main.replaceChildren(...[state.stopped && el('div', { class: 'banner' }, `Sending is stopped. ${state.stopped}`), ...views[tab]()].flat().filter(Boolean));
+  main.replaceChildren(...[state.stopped && el('div', { class: 'banner' }, `Sending is stopped. ${state.stopped}`), !state.person && el('div', { class: 'banner' }, 'View only: this page was not started from a terminal, so it cannot approve, answer or resume sending. To do those, run outlevo dashboard in your own terminal.'), ...views[tab]()].flat().filter(Boolean));
   window.scrollTo(0, y);
 }
 

@@ -1,6 +1,6 @@
 import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { isStopped } from '../src/compliance.js';
+import { isStopped, stopSending } from '../src/compliance.js';
 import { logEvent, run } from '../src/db.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { testApp } from './helpers.js';
@@ -8,9 +8,9 @@ import { testApp } from './helpers.js';
 let close: (() => void) | undefined;
 afterEach(() => close?.());
 
-async function start() {
+async function start(person = true) {
   const a = testApp();
-  const d = await startDashboard(a, 0);
+  const d = await startDashboard(a, 0, { person });
   close = () => d.server.close();
   const u = new URL(d.url);
   const call = (path: string, o: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
@@ -99,6 +99,25 @@ describe('dashboard', () => {
     const { a, call, cookie } = await start();
     logEvent(a.db, a.now(), 'model.call', { name: 'write' }); logEvent(a.db, a.now(), 'email.sent', { contact_id: 1 });
     expect(JSON.parse((await call('/api/state', { headers: { cookie } })).body).events.map((e: any) => e.kind)).toEqual(['email.sent']);
+  });
+  it('started without a terminal, it can stop things but cannot let mail out', async () => {
+    const { a, call, cookie } = await start(false);
+    const post = (path: string) => call(path, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{"id":1}' });
+    stopSending(a, 'Stopped by hand');
+    for (const path of ['/api/approve', '/api/reply/send', '/api/resume']) {
+      const r = await post(path);
+      expect(r.status).toBe(403);
+      expect(JSON.parse(r.body).error).toMatch(/needs a person/);
+    }
+    expect(isStopped(a)).toBe('Stopped by hand');
+    expect((await post('/api/stop')).status).toBe(200);
+    expect(JSON.parse((await call('/api/state', { headers: { cookie } })).body).person).toBe(false);
+  });
+  it('is view only unless told a person started it', async () => {
+    const a = testApp(); const d = await startDashboard(a, 0); close = () => d.server.close();
+    const u = new URL(d.url);
+    const r = await fetch(`http://127.0.0.1:${u.port}/api/resume`, { method: 'POST', headers: { cookie: `ol_session=${d.token}`, 'content-type': 'application/json' }, body: '{}' });
+    expect(r.status).toBe(403);
   });
   it('answers a bad request with its reason', async () => {
     const { call, cookie } = await start();

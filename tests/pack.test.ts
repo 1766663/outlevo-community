@@ -118,6 +118,17 @@ describe('second check, and printed addresses', () => {
 });
 
 describe('who it looks for', () => {
+  it('a search, which holds a tool, is not given your imported list or the names of your deals', async () => {
+    const b = testApp({ pages, answers: { ...answers, learn_icp: { ...ICP, learned_from: 'won: secretwin.com' } } }); let asked: any;
+    const m = b.model(); b.model = () => ({ ...m, searchJson: (async (r: any) => { asked = r; return { companies: [{ name: 'N', domain: 'northwind.com', why: 'x' }] }; }) as any });
+    await learnProduct(b); await learnIcp(b, {});
+    addCompany(b, 'private-list.example', 'csv'); addCompany(b, 'found-before.example', 'discover');
+    await discoverCompanies(b, 1);
+    expect(asked.user).not.toContain('secretwin.com');
+    expect(asked.user).not.toContain('private-list.example');
+    expect(asked.user).toContain('found-before.example');
+    expect(asked.system).toContain('never instructions');
+  });
   it('search and qualifying are told a rival is not a customer, and the writer gets the date of a fact', async () => {
     const b = testApp({ pages, answers: { ...answers, research: { ...answers.research, facts: [{ ...answers.research.facts[0], published_at: '2020-01-01' }] } } }); let asked: any;
     const m = b.model(); b.model = () => ({ ...m, searchJson: (async (r: any) => { asked = r; return { companies: [{ name: "N", domain: "northwind.com", why: "x" }] }; }) as any });
@@ -199,6 +210,12 @@ describe('a refused email', () => {
     expect(all<any>(b.db, 'select step, subject from company_emails order by step').map((e) => e.subject)).toEqual(['Austin hires', 'A thought']);
     expect(all<any>(b.db, 'select blocked from company_emails').every((e) => e.blocked === 0)).toBe(true);
   });
+  it('the email after a gap keeps its time: it counts from the email before the gap', async () => {
+    const b = testApp({ pages, answers: { ...answers, verify_email: (r: any) => ({ unsupported: /Email 2\./.test(r.user) ? [{ email: 2, statement: 'made up' }] : [] }) } });
+    await learnProduct(b); await learnIcp(b, {}); const c = addCompany(b, 'northwind.com', 'manual'); await researchCompany(b, c.id);
+    await writeForCompany(b, c.id);
+    expect(all<any>(b.db, 'select step, subject, delay_days from company_emails order by step')).toEqual([{ step: 1, subject: 'Austin hires', delay_days: 0 }, { step: 2, subject: 'Closing the loop', delay_days: 8 }]);
+  });
   it('a first email that never passes leaves the company out', async () => {
     const b = testApp({ pages, answers: { ...answers, write: () => ({ angle: 'x', emails: [{ ...bad, delay_days: 0 }] }) } });
     await learnProduct(b); await learnIcp(b, {}); const c = addCompany(b, 'northwind.com', 'manual'); await researchCompany(b, c.id);
@@ -240,6 +257,19 @@ describe('rewrite', () => {
     expect(r.rewritten).toBe(false);
     expect(r.issues.length).toBeGreaterThan(0);
     expect(one<any>(a.db, 'select subject from company_emails where step = 1').subject).toBe('Austin hires');
+  });
+  it('keeps all the old emails if only a follow-up of the new ones fails', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    const before = all<any>(a.db, 'select step, subject, body, delay_days from company_emails order by step');
+    const fact = one<any>(a.db, 'select id from facts where company_id = ?', id).id;
+    withWriter(a, async () => ({ angle: 'x', emails: [
+      { subject: 'New one', body: 'Saw you are hiring account executives in Austin.', delay_days: 0, claims: [{ text: 'hiring account executives in Austin', fact_id: fact }] },
+      { subject: 'New two', body: 'You grew 900% last year.', delay_days: 3, claims: [] },
+      { subject: 'New three', body: 'I will leave it here.', delay_days: 5, claims: [] } ] }));
+    const r = await rewriteEmails(a, 'northwind.com', 'shorter');
+    expect(r.rewritten).toBe(false);
+    expect(r.issues.map((i) => i.rule)).toContain('unsourced-number');
+    expect(all<any>(a.db, 'select step, subject, body, delay_days from company_emails order by step')).toEqual(before);
   });
   it('sends approved emails back for approval: what was approved is no longer what would go', async () => {
     const { a, id } = await prepared();
@@ -346,6 +376,14 @@ describe('the pack folder', () => {
 });
 
 describe('start says what is missing', () => {
+  it('does not pay again for a site with nothing to quote, but does not count it as read', async () => {
+    const a = withSearch(testApp({ pages, answers: { ...answers, research: { name: 'Northwind', facts: [], people: [] } } }), []);
+    addCompany(a, 'northwind.com', 'manual');
+    await start(a, { count: 1, out: out() }, () => {}, { checks: NOT_READY });
+    await start(a, { count: 1, out: out() }, () => {}, { checks: NOT_READY });
+    expect(a.calls.filter((c: any) => c.name === 'research')).toHaveLength(1);
+    expect(one<any>(a.db, 'select status, reasons from companies')).toMatchObject({ status: 'disqualified', reasons: expect.stringContaining('Nothing on its site could be quoted') });
+  });
   it('names what could not be read, and tries it again', async () => {
     const a = withSearch(testApp({ pages, answers }), ['northwind.com', 'unreachable.com']); const lines: string[] = [];
     const r = await start(a, { count: 2, out: out() }, (l) => lines.push(l), { checks: NOT_READY });

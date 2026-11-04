@@ -81,7 +81,12 @@ export function dashboardState(a: App) {
   };
 }
 
-export function startDashboard(a: App, port = 5757): Promise<{ server: Server; url: string; token: string }> {
+// What sends mail, or lets it go out again. Stopping, rejecting and suppressing only ever mean less mail.
+const NEEDS_PERSON = new Set(['/api/approve', '/api/reply/send', '/api/resume']);
+
+/** `person`: started by someone at a terminal. Started by a script, whoever has the link can look and stop things, but cannot let mail out. */
+export function startDashboard(a: App, port = 5757, opts: { person?: boolean } = {}): Promise<{ server: Server; url: string; token: string }> {
+  const person = opts.person === true;
   const token = randomBytes(24).toString('base64url');
   const tokenOk = (given: string | undefined) => {
     if (!given) return false;
@@ -129,12 +134,13 @@ export function startDashboard(a: App, port = 5757): Promise<{ server: Server; u
       if (req.method === 'GET' && asset) { res.writeHead(200, { ...SECURITY, 'content-type': `${asset[1]}; charset=utf-8` }); return res.end(readFileSync(join(PUBLIC, asset[0]))); }
       if (!tokenOk(cookieOf(req))) return json(res, 401, { error: 'Open the link that outlevo dashboard printed' });
 
-      if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, dashboardState(a));
+      if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, { ...dashboardState(a), person });
       if (req.method === 'GET' && url.pathname === '/api/doctor') return json(res, 200, await readiness(a));
       const action = actions[url.pathname];
       if (req.method === 'POST' && action) {
         // SameSite covers browsers; this covers anything that ignores it.
         if (req.headers['content-type'] !== 'application/json') return json(res, 415, { error: 'JSON only' });
+        if (!person && NEEDS_PERSON.has(url.pathname)) return json(res, 403, { error: 'This needs a person: start outlevo dashboard in your own terminal, and do it there' });
         return json(res, 200, await action(await readBody(req)));
       }
       return json(res, 404, { error: 'Not found' });

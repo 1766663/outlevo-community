@@ -3,7 +3,7 @@ import { asksToStop, checkBounces, dailyLimit, inSendingHours, isStopped, isSupp
 import { HARD_DAILY_LIMIT, DEFAULTS } from '../src/config.js';
 import { all, one, run } from '../src/db.js';
 import { addCompany, addContact, approve } from '../src/pipeline.js';
-import { checkReplies, sendSuggestedReply } from '../src/replies.js';
+import { checkReplies, readFrom, sendSuggestedReply } from '../src/replies.js';
 import { nextDue, sendNext } from '../src/send.js';
 import { OK_CHECKS, testApp, TUESDAY_NOON } from './helpers.js';
 
@@ -36,6 +36,32 @@ describe('sending', () => {
     expect(m.text).toContain('1 Main St, Springfield, IL 62701');
     expect(m.text).toContain('Reply "stop"');
     expect(m.headers?.['List-Unsubscribe']).toBe('<mailto:sam@getacme.com?subject=unsubscribe>');
+  });
+  it('blocks a link added after approval, at the moment of sending', async () => {
+    const a = testApp(); approve(a, seed(a));
+    run(a.db, "update drafts set body = body || ' https://evil.example' where step = 1");
+    expect((await send(a) as any).reason).toMatch(/no longer passes/);
+    expect(one<any>(a.db, 'select lint, status from drafts where step = 1')).toMatchObject({ status: 'blocked', lint: expect.stringContaining('link-domain') });
+    expect(a.sent).toHaveLength(0);
+  });
+  it('still sends a link to the prospect\'s own site', async () => {
+    const a = testApp(); approve(a, seed(a));
+    run(a.db, "update drafts set body = body || ' https://northwind.com/careers' where step = 1");
+    expect((await send(a)).sent).toBe(true);
+  });
+  it('makes no DNS lookups when it would not send anyway', async () => {
+    let looked = 0; const checks = async () => { looked++; return OK_CHECKS(); };
+    const a = testApp();
+    expect((await sendNext(a, { checks }) as any).reason).toBe('Nothing is due');
+    approve(a, seed(a));
+    a.clock.now = new Date('2026-11-03T03:00:00Z');
+    expect((await sendNext(a, { checks }) as any).reason).toBe('Outside sending hours');
+    a.clock.now = TUESDAY_NOON; a.config.limits.start_per_day = 0;
+    expect((await sendNext(a, { checks }) as any).reason).toMatch(/limit of 0/);
+    expect(looked).toBe(0);
+    a.config.limits.start_per_day = 5;
+    expect((await sendNext(a, { checks })).sent).toBe(true);
+    expect(looked).toBe(1);
   });
   it('refuses when a blocking check fails', async () => {
     const a = testApp(); approve(a, seed(a));
@@ -291,6 +317,33 @@ describe('replies', () => {
     expect(one<any>(a.db, 'select class from replies').class).toBe('unsubscribe');
     expect(one<any>(a.db, 'select value from suppression').value).toBe('dana@northwind.com');
     expect((await send(a)).sent).toBe(false);
+  });
+  it('reads a renumbered mailbox from the start, and does not pay twice for what it knows', () => {
+    const box = { validity: '7', uidNext: 5000 };
+    expect(readFrom(4000, '7', box)).toBe(4000);
+    expect(readFrom(4000, null, box)).toBe(4000); // an install from before this was kept: no reason to read it all again
+    expect(readFrom(4000, '6', box)).toBe(0);
+    expect(readFrom(4000, '7', { validity: '7', uidNext: 13 })).toBe(0); // same label, but its numbers went back
+  });
+  it('remembers the mailbox it read, handles a stop in a renumbered one, and pays once for an old reply', async () => {
+    const a = classified({ class: 'not_now', reason: 'Later', suggested_reply: null }); approve(a, seed(a)); await send(a);
+    const asked: any[] = [];
+    const mail = (uid: number, messageId: string, text: string) => ({ uid, messageId, from: 'dana@northwind.com', subject: 'Re: Austin hires', text, receivedAt: TUESDAY_NOON });
+    await checkReplies(a, { fetchNew: async (s, v) => { asked.push([s, v]); return { messages: [mail(4000, '<old@x>', 'Ask me next year.')], lastUid: 4000, validity: '7' }; } });
+    const calls = a.calls.length;
+    await checkReplies(a, { fetchNew: async (s, v) => { asked.push([s, v]); return { messages: [mail(11, '<old@x>', 'Ask me next year.'), mail(12, '<new@x>', 'Please stop emailing me.')], lastUid: 12, validity: '8' }; } });
+    expect(asked).toEqual([[0, null], [4000, '7']]);
+    expect(a.calls.length).toBe(calls);
+    expect(all<any>(a.db, 'select class from replies order by id').map((r) => r.class)).toEqual(['not_now', 'unsubscribe']);
+    expect(isSuppressed(a, 'dana@northwind.com')).toBeTruthy();
+    await checkReplies(a, { fetchNew: async (s, v) => { asked.push([s, v]); return { messages: [], lastUid: s, validity: '8' }; } });
+    expect(asked.at(-1)).toEqual([12, '8']);
+  });
+  it('a drafted answer carries the unsubscribe header too', async () => {
+    const a = classified({ class: 'question', reason: 'Asks', suggested_reply: 'Yes, it does.' }); approve(a, seed(a)); await send(a);
+    await checkReplies(a, inbox([{ from: 'dana@northwind.com', text: 'Does it do this?' }]));
+    await sendSuggestedReply(a, one<any>(a.db, 'select id from replies').id, { checks: OK_CHECKS });
+    expect(a.sent.at(-1)!.headers?.['List-Unsubscribe']).toBe('<mailto:sam@getacme.com?subject=unsubscribe>');
   });
   it('any reply stops that person and their company', async () => {
     const a = classified({ class: 'not_now', reason: 'Later', suggested_reply: null }); const id = seed(a); approve(a, id);
