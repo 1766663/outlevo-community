@@ -8,10 +8,12 @@ import { isStopped, readiness, ready, resumeSending, stopSending, suppress } fro
 import { startDashboard } from './dashboard/server.js';
 import { all, one } from './db.js';
 import { hasErrors, lintEmail, parseEmailFile } from './lint.js';
+import { findContacts } from './contacts.js';
 import { cycle, runLoop } from './loop.js';
 import { addCompany, approve, discoverCompanies, getIcp, importCompanies, importContacts, learnIcp, learnProduct, nextToWrite, reject, researchCompany, reviewQueue, writeSequence } from './pipeline.js';
-import { checkReplies, sendSuggestedReply } from './replies.js';
+import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
+import { start } from './start.js';
 
 const HELP = `outlevo: an open-source AI SDR for B2B. Runs on your machine.
 
@@ -20,6 +22,9 @@ Setup
   config set <path> <value>        e.g. sender.email, smtp.host, limits.max_per_day
   config show
   doctor                           What must be fixed before anything can send
+Start here
+  start <your-site> [--count 10] [--won a.csv] [--lost b.csv] [--brief "..."]
+                                   From your website to emails waiting for review
 Know your market
   product learn [URL]              Read your website
   icp learn [--won a.csv] [--lost b.csv] [--brief "..."]
@@ -30,6 +35,7 @@ Companies and people
   companies discover [--count 10] [--brief "..."]    Web search through your model
   companies list
   contacts import <file.csv>       Columns: email, first_name, last_name, title, domain
+  contacts find [--limit 5]        With your HUNTER_API_KEY, verified addresses only
   research [--limit 5] [--company ID]
 Emails
   write [--limit 5] [--contact ID]
@@ -41,6 +47,8 @@ Sending
   send [--dry-run]                 Send the next email that is due, if every guard allows
   replies                          Read new mail, stop sequences, draft answers
   answer <reply-id>                Send a drafted answer
+  meetings                         Meetings booked
+  meetings add <contact-id>        Record one by hand
   suppress <email-or-domain>
   stop | resume                    The kill switch
 Running
@@ -96,8 +104,23 @@ async function main() {
     return output({ connected: true }, 'Key saved. Try: outlevo cloud status');
   }
 
+  if (cmd === 'start') {
+    const c = loadConfig();
+    c.website = need(sub ?? c.website, 'your website: outlevo start https://yourcompany.com');
+    saveConfig(c);
+  }
   const a = makeApp();
   switch (cmd) {
+    case 'start': {
+      const r = await start(a, { count: num(flags.count, 10), ...(flags.won ? { won: flags.won } : {}), ...(flags.lost ? { lost: flags.lost } : {}), ...(flags.brief ? { brief: flags.brief } : {}) }, flags.json ? () => {} : (l) => console.log(l));
+      if (flags.json) output(r);
+      return;
+    }
+    case 'meetings': {
+      if (sub === 'add') { addMeeting(a, Number(need(arg, 'a contact id')), 'manual', null); return output({ added: true }, 'Recorded.'); }
+      const rows = all<any>(a.db, `select m.id, m.status, m.source, m.booked_at, p.first_name, p.last_name, p.email, c.domain from meetings m join contacts p on p.id = m.contact_id join companies c on c.id = p.company_id order by m.booked_at desc`);
+      return output(rows, rows.map((m) => `${m.booked_at.slice(0, 10)} ${m.status.padEnd(9)} ${m.first_name} ${m.last_name ?? ''} <${m.email}> ${m.domain}`).join('\n') || 'No meetings yet.');
+    }
     case 'doctor': {
       const checks = await readiness(a);
       output(checks, checks.map((c) => `${c.ok ? 'ok    ' : c.blocking ? 'NEEDED' : 'advice'} ${c.name}${c.ok ? '' : `: ${c.detail}`}`).join('\n') + `\n\n${ready(checks) ? 'Ready to send.' : 'Sending stays off until everything NEEDED is fixed.'}`);
@@ -118,6 +141,7 @@ async function main() {
     }
     case 'contacts': {
       if (sub === 'import') { const r = importContacts(a, need(arg, 'a file')); return output(r, `Added ${r.added}. Skipped ${r.skipped.length}.`); }
+      if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.`); }
       return output(all(a.db, 'select p.id, p.first_name, p.last_name, p.title, p.email, p.email_source, p.status, c.domain from contacts p join companies c on c.id = p.company_id'));
     }
     case 'research': {
@@ -157,7 +181,7 @@ async function main() {
     case 'dashboard': { const d = await startDashboard(a, flags.port ? num(flags.port, 5757) : 5757); console.log(`Open: ${d.url}`); return; }
     case 'status': {
       const count = (sql: string) => one<{ n: number }>(a.db, sql)?.n ?? 0;
-      const s = { stopped: isStopped(a), companies: count('select count(*) as n from companies'), qualified: count("select count(*) as n from companies where status = 'qualified'"), contacts: count('select count(*) as n from contacts'), to_review: reviewQueue(a).length, approved: count("select count(*) as n from drafts where status = 'approved'"), sent: count("select count(*) as n from drafts where status = 'sent'"), replies: count('select count(*) as n from replies') };
+      const s = { stopped: isStopped(a), companies: count('select count(*) as n from companies'), qualified: count("select count(*) as n from companies where status = 'qualified'"), contacts: count('select count(*) as n from contacts'), meetings: count("select count(*) as n from meetings where status = 'booked'"), to_review: reviewQueue(a).length, approved: count("select count(*) as n from drafts where status = 'approved'"), sent: count("select count(*) as n from drafts where status = 'sent'"), replies: count('select count(*) as n from replies') };
       return output(s, Object.entries(s).map(([k, v]) => `${k.padEnd(11)} ${v ?? 'no'}`).join('\n'));
     }
     case 'cloud': {

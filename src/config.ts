@@ -12,6 +12,8 @@ export type Config = {
   warmup_start: string | null;
   do_not_contact: string[];
   model: { provider: 'anthropic' | 'claude-cli'; name: string; max_calls_per_day: number };
+  booking_url: string;
+  contacts: { max_lookups_per_day: number };
   loop_minutes: number;
   cloud_url: string;
 };
@@ -25,6 +27,8 @@ export const DEFAULTS: Config = {
   warmup_start: null,
   do_not_contact: [],
   model: { provider: 'anthropic', name: 'claude-opus-5-5', max_calls_per_day: 200 },
+  booking_url: '',
+  contacts: { max_lookups_per_day: 25 },
   loop_minutes: 5,
   cloud_url: 'https://api.outlevo.com',
 };
@@ -65,7 +69,7 @@ export function setPath(c: Config, path: string, value: string): Config {
 }
 
 // Secrets live in the environment or in a 0600 file next to the database, never in config.json.
-type Secrets = { smtp_password?: string; imap_password?: string; outlevo_key?: string };
+type Secrets = { smtp_password?: string; imap_password?: string; outlevo_key?: string; hunter_key?: string };
 export function loadSecrets(home = homeDir(), env = process.env): Secrets {
   const p = join(home, 'secrets.json');
   const file: Secrets = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
@@ -73,6 +77,7 @@ export function loadSecrets(home = homeDir(), env = process.env): Secrets {
     smtp_password: env.OUTLEVO_SMTP_PASSWORD || file.smtp_password,
     imap_password: env.OUTLEVO_IMAP_PASSWORD || env.OUTLEVO_SMTP_PASSWORD || file.imap_password || file.smtp_password,
     outlevo_key: env.OUTLEVO_KEY || file.outlevo_key,
+    hunter_key: env.HUNTER_API_KEY || file.hunter_key,
   };
 }
 export function saveSecret(key: keyof Secrets, value: string, home = homeDir()) {

@@ -31,6 +31,39 @@ export function imapInbox(a: App): Inbox {
   };
 }
 
+// A booking tool or a calendar says so by email. Forged mail could only raise a counter here: nothing is sent because of it.
+const BOOKING_SENDER = /@(calendly\.com|cal\.com|.*\.cal\.com)$|^calendar-notification@google\.com$/i;
+const BOOKED = /\b(new event|invitation|booked|confirmed|scheduled)\b/i;
+const CANCELLED = /\b(cancel+ed|canceled event)\b/i;
+
+function handleBooking(a: App, m: Incoming): boolean {
+  if (!BOOKING_SENDER.test(m.from)) return false;
+  const body = `${m.subject}\n${m.text}`.toLowerCase();
+  const who = all<{ id: number; email: string; company_id: number }>(a.db, 'select id, email, company_id from contacts').find((c) => body.includes(c.email));
+  if (!who) return true;
+  if (CANCELLED.test(m.subject)) {
+    run(a.db, "update meetings set status = 'cancelled' where contact_id = ? and status = 'booked'", who.id);
+    logEvent(a.db, a.now(), 'meeting.cancelled', { contact_id: who.id });
+  } else if (BOOKED.test(m.subject)) addMeeting(a, who.id, m.from.split('@')[1] ?? 'email', m.subject, m.messageId);
+  return true;
+}
+
+export function addMeeting(a: App, contactId: number, source: string, title: string | null, messageId: string | null = null) {
+  const c = one<{ company_id: number }>(a.db, 'select company_id from contacts where id = ?', contactId);
+  if (!c) throw new Error(`No contact ${contactId}`);
+  if (messageId && one(a.db, 'select 1 from meetings where message_id = ?', messageId)) return;
+  run(a.db, 'insert into meetings (contact_id, source, title, message_id, booked_at) values (?, ?, ?, ?, ?)', contactId, source, title, messageId, a.now().toISOString());
+  run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.company_id);
+  logEvent(a.db, a.now(), 'meeting.booked', { contact_id: contactId, source });
+}
+
+/** The answer to someone interested always carries the booking link: that step is too important to leave to the model. */
+export function withBookingLink(a: App, cls: string, suggested: string | null): string | null {
+  const url = a.config.booking_url.trim();
+  if (!suggested || !url || cls !== 'interested' || suggested.includes(url)) return suggested;
+  return `${suggested.trimEnd()}\n\nPick a time here: ${url}`;
+}
+
 const cancelRest = (a: App, contactId: number) => run(a.db, "update drafts set status = 'cancelled' where contact_id = ? and status in ('pending','approved','blocked')", contactId);
 
 function handleBounce(a: App, m: Incoming): boolean {
@@ -53,6 +86,7 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   let handled = 0;
   for (const m of messages) {
     if (handleBounce(a, m)) { handled++; continue; }
+    if (handleBooking(a, m)) { handled++; continue; }
     const contact = one<{ id: number; first_name: string; company_id: number; email: string }>(a.db, 'select id, first_name, company_id, email from contacts where email = ?', m.from);
     if (!contact) continue;
     if (one(a.db, 'select 1 from replies where message_id = ?', m.messageId)) continue;
@@ -71,11 +105,11 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
         const facts = all<{ text: string }>(a.db, 'select text from product_facts');
         const r = await a.model().json<{ class: (typeof CLASSES)[number]; reason: string; suggested_reply: string | null }>({
           name: 'classify_reply', effort: 'medium',
-          system: `You read a reply to a cold email and draft an answer for a founder to review. ${UNTRUSTED} Answer only from the facts about our product; when they do not cover a question, say the founder will come back on it. Suggest a reply for interested and question only, under 80 words, plain text; otherwise null. Treat a request to stop as unsubscribe.`,
+          system: `You read a reply to a cold email and draft an answer for a founder to review. ${UNTRUSTED} Answer only from the facts about our product; when they do not cover a question, say the founder will come back on it. Suggest a reply for interested and question only, under 80 words, plain text; otherwise null. To someone interested, propose a short call and do not invent a time or a link: the booking link is added for you. Treat a request to stop as unsubscribe.`,
           user: `We sell: ${product?.summary ?? ''}\nFacts:\n${facts.map((f) => `- ${f.text}`).join('\n')}\n\nReply from ${contact.first_name}:\n${untrusted(m.from, firstLines.slice(0, 6000))}`,
           schema: obj({ class: { type: 'string', enum: [...CLASSES] }, reason: S, suggested_reply: nullable('string') }),
         });
-        cls = r.class; reason = r.reason; suggested = r.suggested_reply;
+        cls = r.class; reason = r.reason; suggested = withBookingLink(a, r.class, r.suggested_reply);
       } catch (e) { cls = 'other'; reason = `Not classified: ${(e as Error).message}`; }
     }
     if (cls === 'unsubscribe') suppress(a, contact.email, 'asked to stop');

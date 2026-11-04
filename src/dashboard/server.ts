@@ -29,8 +29,11 @@ export function dashboardState(a: App) {
     pipeline: { new: count('new'), qualified: count('qualified'), disqualified: count('disqualified'), error: count('error'),
       contacts: one<{ n: number }>(a.db, "select count(*) as n from contacts where status = 'active'")?.n ?? 0,
       approved: one<{ n: number }>(a.db, "select count(*) as n from drafts where status = 'approved'")?.n ?? 0,
-      sent: one<{ n: number }>(a.db, "select count(*) as n from drafts where status = 'sent'")?.n ?? 0 },
+      sent: one<{ n: number }>(a.db, "select count(*) as n from drafts where status = 'sent'")?.n ?? 0,
+      meetings: one<{ n: number }>(a.db, "select count(*) as n from meetings where status = 'booked'")?.n ?? 0 },
     review: reviewQueue(a), replies,
+    meetings: all<any>(a.db, `select m.id, m.source, m.title, m.status, m.booked_at, p.first_name, p.last_name, p.title as job, c.domain, c.name as company
+      from meetings m join contacts p on p.id = m.contact_id join companies c on c.id = p.company_id order by m.booked_at desc limit 100`),
     companies: all<any>(a.db, 'select id, domain, name, status, score, reasons, error, researched_at from companies order by coalesce(researched_at, created_at) desc limit 100'),
     events: all<any>(a.db, 'select at, kind, data from events order by id desc limit 40'),
   };

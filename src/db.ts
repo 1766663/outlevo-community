@@ -27,6 +27,9 @@ create table if not exists replies (
   id integer primary key, contact_id integer references contacts(id) on delete set null, message_id text unique, from_addr text not null,
   subject text, text text, class text not null, reason text, received_at text not null,
   suggested text, suggested_status text not null default 'none' check (suggested_status in ('none','pending','sent','dismissed')));
+create table if not exists meetings (
+  id integer primary key, contact_id integer not null references contacts(id) on delete cascade, source text not null, title text,
+  message_id text unique, status text not null default 'booked' check (status in ('booked','cancelled')), booked_at text not null);
 create table if not exists suppression (value text primary key, reason text not null, created_at text not null);
 create table if not exists events (id integer primary key, at text not null, kind text not null, data text);
 create table if not exists usage (day text not null, kind text not null, count integer not null default 0, primary key (day, kind));
