@@ -17,6 +17,9 @@ const normalizeNumber = (s: string) => s.toLowerCase().replace(/[\s,$€£]/g, '
 const numbersIn = (s: string) => new Set([...s.matchAll(NUMBER)].map((m) => normalizeNumber(m[0])));
 const normText = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim();
 
+// The people have to be what the sentence is about: "Outlevo finds firms like that" says nothing about how they behave.
+const GENERAL_CLAIM = /^(most |many |those |these |such )?(buyers?|customers?|clients?|founders?|teams?|companies|firms?|people|prospects?|ceos?|owners?)\s+(like\s+(that|this|these|those|you|yours)|(of\s+)?that\s+size)\b/i;
+
 /** Rules, not a model: the same email always gets the same answer, and it works with no key and no network. */
 export function lintEmail(i: LintInput): LintIssue[] {
   const strict = i.strict !== false; const step = i.step ?? 1;
@@ -39,6 +42,8 @@ export function lintEmail(i: LintInput): LintIssue[] {
   if (/!{2,}|\?{2,}/.test(all)) add('warning', 'punctuation', 'Repeated punctuation reads as spam');
   for (const w of SPAM) if (new RegExp(`\\b${w.replace(/[%-]/g, '\\$&')}(d|s)?\\b`, 'i').test(all)) add('warning', 'spam-word', `Spam-filter phrase: "${w}"`);
   if (MACHINE.test(all)) add('warning', 'machine-writing', 'A stock opener or phrase that reads as machine-written');
+  // "Buyers like that delete generic pitches fast": nobody can source it, and it reads as a fact. As a question it is fine.
+  for (const s of i.body.split(/(?<=[.!?])\s+/)) if (!s.trim().endsWith('?') && GENERAL_CLAIM.test(s.trim())) add(hard, 'general-claim', `"${s.trim()}" says how people behave, with no source. Ask it, or leave it out`);
 
   const links = [...i.body.matchAll(/https?:\/\/[^\s)>\]]+/gi)].map((m) => m[0]);
   if (links.length > 1) add(hard, 'links', `${links.length} links; a cold email carries one at most`);

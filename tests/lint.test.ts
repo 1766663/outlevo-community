@@ -41,6 +41,23 @@ describe('lintEmail', () => {
   it('still refuses fake history in a file check', () => { expect(hasErrors(lintEmail({ subject: 'Re: hi', body: 'x', strict: false }))).toBe(true); });
 });
 
+describe('general claims with no source', () => {
+  const said = (extra: string) => rules({ ...good, body: `${good.body} ${extra}` });
+  it('refuses how people behave, stated as fact', () => {
+    expect(said('Buyers like that delete generic pitches fast.')).toContain('general-claim');
+    expect(said('Teams that size often worry about control.')).toContain('general-claim');
+  });
+  it('lets it be asked, and leaves other sentences alone', () => {
+    expect(said('Do buyers like that delete generic pitches?')).not.toContain('general-claim');
+    expect(said('Our customers approve the first emails.')).not.toContain('general-claim');
+    expect(said('We find firms like that from your website.')).not.toContain('general-claim');
+    expect(said('With it, a team that size can run outbound.')).not.toContain('general-claim');
+  });
+  it('only warns in outlevo check, which has no sources', () => {
+    expect(lintEmail({ subject: 'x', body: 'Buyers like that delete pitches.', strict: false }).filter((x) => x.rule === 'general-claim').map((x) => x.level)).toEqual(['warning']);
+  });
+});
+
 describe('outlevo check on an honest email', () => {
   const clean = (body: string) => lintEmail({ subject: 'A question', body, strict: false });
   it('raises no alarm on ordinary words and figures', () => {

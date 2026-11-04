@@ -75,6 +75,8 @@ outlevo drop northwind.com          # --undo puts it back
 
 A rewrite that fails the checks keeps the old emails. Approved emails that are rewritten need approving again, and once a company's first email has gone, its emails can no longer be rewritten. The pack is rebuilt whole each time, so edit a copy if you want to keep your changes. It never replaces files it did not make: choose another folder with `--out`.
 
+Each industry in your ideal customer gets its own search and its own share of the companies, so one does not fill the list. `outlevo dashboard` opens a local page with the funnel from company to meeting, sends and replies by day, fit scores, the mix by industry and what your model calls add up to.
+
 To make it better, add what you have:
 
 ```bash

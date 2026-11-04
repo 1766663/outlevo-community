@@ -1,6 +1,7 @@
 import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isStopped } from '../src/compliance.js';
+import { logEvent, run } from '../src/db.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { testApp } from './helpers.js';
 
@@ -62,6 +63,42 @@ describe('dashboard', () => {
     expect(r.status).toBe(200);
     expect(isStopped(a)).toMatch(/dashboard/);
     expect(JSON.parse((await call('/api/state', { headers: { cookie } })).body).stopped).toMatch(/dashboard/);
+  });
+  it('counts the charts over everything, not only the rows it lists', async () => {
+    const { a, call, cookie } = await start();
+    const now = a.now().toISOString(); const old = '2020-01-01T10:00:00.000Z';
+    for (let i = 0; i < 250; i++) run(a.db, "insert into companies (domain, source, status, score, created_at) values (?, 'csv', 'qualified', 70, ?)", `c${i}.com`, now);
+    run(a.db, "insert into company_segments (company_id, segment) select id, 'software' from companies where id <= 2");
+    run(a.db, "update companies set status = 'disqualified', score = 10 where id = 2");
+    run(a.db, "insert into contacts (company_id, first_name, email, email_source, created_at) values (1, 'D', 'd@c0.com', 'imported', ?)", now);
+    for (const [step, at] of [[1, now], [2, old]] as const) run(a.db, "insert into drafts (contact_id, step, subject, body, claims, lint, status, created_at, sent_at) values (1, ?, 's', 'b', '[]', '[]', 'sent', ?, ?)", step, now, at);
+    run(a.db, "insert into replies (contact_id, from_addr, class, received_at) values (1, 'd@c0.com', 'interested', ?)", now);
+    run(a.db, "insert into meetings (contact_id, source, booked_at) values (1, 'manual', ?)", now);
+    const s = JSON.parse((await call('/api/state', { headers: { cookie } })).body);
+    const c = s.charts; const step = (l: string) => c.funnel.find((x: any) => x.label === l).n;
+    expect(s.companies).toHaveLength(200);
+    expect(step('Companies looked at')).toBe(250);
+    expect(step('Fit who you sell to')).toBe(249);
+    expect([step('Written to'), step('Replied'), step('Meetings booked')]).toEqual([1, 1, 1]);
+    expect(c.scores.find((b: any) => b.label === '60–79').n).toBe(249);
+    expect(c.scores.find((b: any) => b.label === '0–19').n).toBe(1);
+    expect(c.sent_by_day).toHaveLength(14);
+    expect(c.sent_by_day.at(-1).n).toBe(1); // the old send is outside the 14 days
+    expect(c.rates).toMatchObject({ people_written: 1, replied: 1, booked: 1, bounced: 0 });
+    expect(c.industries).toEqual([{ segment: 'software', fit: 1, other: 1 }]);
+    expect(c.reply_kinds).toEqual([{ label: 'interested', n: 1 }]);
+  });
+  it('serves the charts, and they set no style attribute the page rules would refuse', async () => {
+    const { call, cookie } = await start();
+    const js = await call('/charts.js', { headers: { cookie } });
+    expect(js.status).toBe(200);
+    expect(js.body).not.toMatch(/setAttribute\('style'|innerHTML/);
+    expect((await call('/app.js', { headers: { cookie } })).body).not.toMatch(/innerHTML/);
+  });
+  it('leaves model calls out of the activity list', async () => {
+    const { a, call, cookie } = await start();
+    logEvent(a.db, a.now(), 'model.call', { name: 'write' }); logEvent(a.db, a.now(), 'email.sent', { contact_id: 1 });
+    expect(JSON.parse((await call('/api/state', { headers: { cookie } })).body).events.map((e: any) => e.kind)).toEqual(['email.sent']);
   });
   it('answers a bad request with its reason', async () => {
     const { call, cookie } = await start();

@@ -7,6 +7,7 @@ import { buildPack } from '../src/pack.js';
 import { DEFAULTS } from '../src/config.js';
 import { addCompany, addContact, approve, discoverCompanies, dropCompany, learnIcp, learnProduct, nextToWrite, rewriteEmails, researchCompany, reviewQueue, writeForCompany, writeSequence } from '../src/pipeline.js';
 import { suppress } from '../src/compliance.js';
+import { parseJson } from '../src/model.js';
 import { start } from '../src/start.js';
 import { testApp } from './helpers.js';
 
@@ -132,6 +133,61 @@ describe('who it looks for', () => {
   });
 });
 
+describe('spread across industries', () => {
+  const spread = (industries: string[], found: (user: string, n: number) => string[]) => {
+    const asked: string[] = [];
+    const b = testApp({ pages, answers: { ...answers, learn_icp: { ...ICP, industries } } });
+    const m = b.model();
+    b.model = () => ({ ...m, searchJson: (async (r: any) => { asked.push(r.user); return { companies: found(r.user, Number(r.user.match(/Find (\d+)/)[1])).map((domain) => ({ name: domain, domain, why: 'x' })) }; }) as any });
+    return { b, asked };
+  };
+  const names = (s: string, n: number, from = 0) => Array.from({ length: n }, (_, i) => `${s}${i + from}.com`);
+  it('gives each industry its own search and its share, however many one offers', async () => {
+    const { b, asked } = spread(['it', 'law', 'media'], (u, n) => names(u.includes('industry: it') ? 'it' : u.includes('industry: law') ? 'law' : 'media', n + 20));
+    await learnProduct(b); await learnIcp(b, {});
+    const r = await discoverCompanies(b, 9);
+    expect(r.by_segment).toEqual({ it: 3, law: 3, media: 3 });
+    expect(asked.length).toBe(3);
+  });
+  it('gives the share of an industry that finds nothing to the others', async () => {
+    let n = 0;
+    const { b } = spread(['it', 'law'], (u, want) => u.includes('industry: law') ? [] : names('it', want, (n += 100)));
+    await learnProduct(b); await learnIcp(b, {});
+    expect((await discoverCompanies(b, 6)).by_segment).toEqual({ it: 6, law: 0 });
+  });
+  it('tops up the industry that fell behind, not the one ahead', async () => {
+    const { b, asked } = spread(['it', 'law'], (u, want) => names(u.includes('industry: it') ? 'it' : 'law', want, asked.length * 100));
+    await learnProduct(b); await learnIcp(b, {});
+    await discoverCompanies(b, 4);
+    run(b.db, "update companies set status = 'disqualified' where domain like 'law%'");
+    asked.length = 0;
+    expect((await discoverCompanies(b, 2)).by_segment).toEqual({ law: 2 });
+    expect(asked.every((u) => u.includes('industry: law'))).toBe(true);
+  });
+  it('still saves what it found when one search fails, and says so', async () => {
+    const { b } = spread(['it', 'law'], (u, want) => { if (u.includes('industry: law')) throw new Error('refused'); return names('it', want); });
+    await learnProduct(b); await learnIcp(b, {});
+    await expect(discoverCompanies(b, 4)).rejects.toThrow('refused');
+    expect(one<any>(b.db, 'select count(*) as n from companies').n).toBe(2);
+  });
+});
+
+describe('a search that goes wrong', () => {
+  it('still researches and writes what the other searches found', async () => {
+    const b = testApp({ pages, answers: { ...answers, learn_icp: { ...ICP, industries: ['it', 'law'] } } });
+    const m = b.model();
+    b.model = () => ({ ...m, searchJson: (async (r: any) => { if (r.user.includes('industry: law')) throw new Error('bad answer'); return { companies: [{ name: 'N', domain: 'northwind.com', why: 'x' }] }; }) as any });
+    const lines: string[] = [];
+    const r = await start(b, { count: 2, out: out() }, (l) => lines.push(l), { checks: NOT_READY });
+    expect(lines.join('\n')).toContain('bad answer');
+    expect(r.pack.companies).toBe(1);
+  });
+  it('reads JSON out of prose with brackets of its own', () => {
+    expect(parseJson<any>('[s] fixed-scope firms [1]. Here you go: {"companies":[{"domain":"a.com","why":"has ] in it"}]} See [2].').companies[0].domain).toBe('a.com');
+    expect(() => parseJson('[s] no answer here')).toThrow(/did not answer in JSON/);
+  });
+});
+
 describe('a refused email', () => {
   const bad = { subject: 'Numbers', body: 'You have 77 reps.', delay_days: 3, claims: [] };
   const first = (r: any) => answers.write(r).emails[0];
@@ -153,6 +209,8 @@ describe('a refused email', () => {
     const write = a.calls.find((c: any) => c.name === 'write') as any;
     expect(write.user).toContain('Quote: We are hiring account executives in Austin');
     expect(write.system).toContain('Only state what the quotes say');
+    expect(write.system).toContain('Never state how buyers, markets or people like them behave');
+    expect((a.calls.find((c: any) => c.name === 'verify_email') as any).system).toContain('Also list every general claim');
   });
   it('a verdict against a follow-up does not hold back the first email', async () => {
     const b = testApp({ pages, answers: { ...answers, verify_email: (r: any) => ({ unsupported: /Email 2\./.test(r.user) ? [{ email: 2, statement: 'made up' }] : [] }) } });

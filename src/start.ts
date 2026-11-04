@@ -73,10 +73,11 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
       const short = o.count - (one<{ n: number }>(a.db, "select count(*) as n from companies where status in ('new', 'qualified')")?.n ?? 0);
       if (short <= 0) break;
       say(`Looking for ${short} ${short === 1 ? 'company' : 'companies'} that fit…`);
-      let added: string[] = [];
-      try { added = (await discoverCompanies(a, short, o.brief)).added; say(`  Found ${added.length}${added.length ? `: ${added.join(', ')}` : ''}.`); } catch (e) { say(`  ${stopped(e)}`); }
-      if (!added.length) break;
+      let added: string[] = []; let failed = false;
+      try { added = (await discoverCompanies(a, short, o.brief)).added; say(`  Found ${added.length}${added.length ? `: ${added.join(', ')}` : ''}.`); } catch (e) { say(`  ${stopped(e)}`); failed = true; }
+      // A search that failed can still have saved what the others found.
       await research("status = 'new'");
+      if (failed || !added.length) break;
     }
     if (a.secrets.hunter_key) {
       say('Finding the right person at each company with your Hunter key…');
@@ -98,6 +99,8 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
   }
 
   const pack = buildPack(a, o.out);
+  const mix = all<{ segment: string; n: number }>(a.db, "select s.segment, count(*) as n from company_segments s join companies c on c.id = s.company_id where c.status = 'qualified' group by s.segment order by n desc");
+  if (mix.length) say(`\nBy industry: ${mix.map((m) => `${m.segment} ${m.n}`).join(', ')}.`);
   const qualified = one<{ n: number }>(a.db, "select count(*) as n from companies where status = 'qualified'")?.n ?? 0;
   const noPerson = one<{ n: number }>(a.db, `select count(*) as n from companies c where c.status = 'qualified'
     and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))`)?.n ?? 0;
@@ -119,5 +122,5 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
   if (toReview) next.push(`Approve what goes out: outlevo review, or outlevo dashboard for a page in your browser.`);
   if (!ready(checks)) next.push(`To send from your own mailbox, fix: ${missing.join(', ')}. See outlevo doctor.`);
   say(`\n${stoppedEarly ? 'Stopped early' : 'Your sales pack is ready'}: ${pack.companies} companies with emails, ${pack.dir}. Nothing was sent.\n\nNext:\n${next.map((n) => `  - ${n}`).join('\n')}`);
-  return { pack, qualified, no_person: noPerson, to_review: toReview, ready_to_send: ready(checks), missing, review_ids: reviewQueue(a).map((g) => g.contact_id), stopped_early: stoppedEarly, next };
+  return { pack, qualified, no_person: noPerson, to_review: toReview, ready_to_send: ready(checks), missing, review_ids: reviewQueue(a).map((g) => g.contact_id), stopped_early: stoppedEarly, by_industry: mix, next };
 }

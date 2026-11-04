@@ -15,11 +15,35 @@ export class ModelRefused extends Error {}
 
 const WITH_DEFAULT_FALLBACK = new Set(['claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-sonnet-5-5']);
 
+/** The end of the bracket opened at `start`, skipping brackets inside strings. */
+function closingOf(text: string, start: number) {
+  let depth = 0; let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]!;
+    if (inString) { if (c === '\\') i++; else if (c === '"') inString = false; }
+    else if (c === '"') inString = true;
+    else if (c === '{' || c === '[') depth++;
+    else if ((c === '}' || c === ']') && --depth === 0) return i;
+  }
+  return -1;
+}
+/** A search answers in prose around its JSON, and the prose can hold brackets of its own, so the answer is the largest piece that parses. */
 export const parseJson = <T>(text: string): T => {
-  const start = text.search(/[{[]/); const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
-  if (start < 0 || end < start) throw new Error('The model did not answer in JSON');
-  return JSON.parse(text.slice(start, end + 1)) as T;
+  let best: { size: number; value: T } | null = null;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{' && text[i] !== '[') continue;
+    const end = closingOf(text, i);
+    if (end < 0) continue;
+    try {
+      const value = JSON.parse(text.slice(i, end + 1)) as T;
+      if (!best || end + 1 - i > best.size) best = { size: end + 1 - i, value };
+      i = end;
+    } catch { /* prose in brackets: keep looking inside it */ }
+  }
+  if (!best) throw new NotJson('The model did not answer in JSON');
+  return best.value;
 };
+class NotJson extends Error {}
 
 export class AnthropicModel implements Model {
   constructor(private name: string, private client = new Anthropic()) {}
@@ -45,7 +69,12 @@ export class AnthropicModel implements Model {
       });
       if (res.stop_reason === 'refusal') throw new ModelRefused(`The model declined ${r.name}`);
       if (res.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: res.content }); continue; }
-      return parseJson<T>(res.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join(''));
+      try { return parseJson<T>(res.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('')); }
+      catch (e) {
+        // The searching is paid for by now: ask for the answer rather than lose it.
+        if (!(e instanceof NotJson)) throw e;
+        messages.push({ role: 'assistant', content: res.content }, { role: 'user', content: 'Answer now with only the JSON object, and nothing else.' });
+      }
     }
     throw new Error(`The search for ${r.name} did not finish`);
   }
