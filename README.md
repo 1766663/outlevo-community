@@ -21,6 +21,8 @@ $ outlevo review
 
 An illustration with a made-up company. Nothing goes out until you run `outlevo approve 1` or press Approve in the dashboard.
 
+> **Status: early.** The checks, limits and guards have tests. It has not yet been run end to end against a live model, a real mailbox and Hunter, so expect rough edges and start with a small list.
+
 ## What makes it different
 
 - **Claims are checked by code, not trusted.** A fact is kept only if its quote is really on the page it names. A number in an email must appear in a fact that email cites. If an email breaks a rule, the model gets one more try. After that the email is blocked and cannot be approved.
@@ -35,7 +37,7 @@ An illustration with a made-up company. Nothing goes out until you run `outlevo 
 You need Node 22.13 or newer and an [Anthropic API key](https://console.anthropic.com/).
 
 ```bash
-git clone <this repository> && cd outlevo-community
+git clone https://github.com/1766663/outlevo-community.git && cd outlevo-community
 npm install && npm run build && npm link
 
 mkdir my-outbound && cd my-outbound
@@ -76,6 +78,8 @@ outlevo run        # replies, send, contacts, write, research, every 5 minutes
 ```
 
 A new mailbox needs 2-4 weeks of warm-up before real volume, with a warm-up service of your choice. So expect the first meetings some weeks after you start, and no number of them is promised.
+
+Bookings are counted from the emails Calendly, Cal.com and Google Calendar send you, and only when your mail provider has verified the sender (DKIM or DMARC, in the `Authentication-Results` header). If yours adds no such header, record them by hand with `outlevo meetings add <contact-id>`.
 
 `outlevo --help` lists every command, and `--json` makes any of them easy for scripts and agents. To let an AI coding agent drive it, see [skills/outlevo/SKILL.md](skills/outlevo/SKILL.md).
 

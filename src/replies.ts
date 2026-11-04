@@ -4,7 +4,7 @@ import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
 import { checkBounces, footer, OPT_OUT, suppress } from './compliance.js';
 import { all, getMeta, logEvent, one, run, setMeta } from './db.js';
 
-export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; receivedAt: Date };
+export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; receivedAt: Date };
 export interface Inbox { fetchNew(sinceUid: number): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number }> }
 
 const CLASSES = ['interested', 'question', 'not_now', 'wrong_person', 'unsubscribe', 'out_of_office', 'other'] as const;
@@ -23,7 +23,8 @@ export function imapInbox(a: App): Inbox {
           if (m.uid <= sinceUid || !m.source) continue;
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from: p.from?.value[0]?.address?.toLowerCase() ?? '', subject: p.subject ?? '', text: p.text ?? '', autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: p.text ?? '', autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid };
@@ -31,15 +32,37 @@ export function imapInbox(a: App): Inbox {
   };
 }
 
-// A booking tool or a calendar says so by email. Forged mail could only raise a counter here: nothing is sent because of it.
-const BOOKING_SENDER = /@(calendly\.com|cal\.com|.*\.cal\.com)$|^calendar-notification@google\.com$/i;
-const BOOKED = /\b(new event|invitation|booked|confirmed|scheduled)\b/i;
-const CANCELLED = /\b(cancel+ed|canceled event)\b/i;
+// A booking tool or a calendar says so by email. A booking stops a company's emails, so the sender has to be proven:
+// a From header costs nothing to forge, the verdict your mail provider put on the message does not.
+const BOOKING_SENDER = /@((.*\.)?calendly\.com|(.*\.)?cal\.com)$|^calendar-notification@google\.com$/i;
+const REMINDER = /\breminder\b/i;
+const CANCELLED = /\b(cancel+ed|declined)\b/i;
+const BOOKED = /\b(new event|invitation|booked|confirmed|scheduled|rescheduled)\b/i;
+const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+
+/** Reads the topmost Authentication-Results, the one your own provider added. Anything else in the message came from the sender. */
+export function senderProven(header: unknown, fromDomain: string): boolean {
+  const first = Array.isArray(header) ? header[0] : header;
+  const text = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
+  const d = fromDomain.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const own = `@?(?:[a-z0-9-]+\\.)*${d}\\b`;
+  return new RegExp(`\\bdmarc=pass\\b[^;]*header\\.from=${own}`, 'i').test(text)
+    || new RegExp(`\\bdkim=pass\\b[^;]*header\\.[di]=${own}`, 'i').test(text);
+}
+
+/** The person this booking is with: an exact address in the message, someone we really wrote to, the latest first. */
+function bookedContact(a: App, text: string) {
+  const found = new Set((text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()));
+  return all<{ id: number; email: string }>(a.db, `select p.id, p.email from contacts p
+    where exists (select 1 from drafts d where d.contact_id = p.id and d.status = 'sent')
+    order by (select max(d.sent_at) from drafts d where d.contact_id = p.id) desc`).find((c) => found.has(c.email));
+}
 
 function handleBooking(a: App, m: Incoming): boolean {
   if (!BOOKING_SENDER.test(m.from)) return false;
-  const body = `${m.subject}\n${m.text}`.toLowerCase();
-  const who = all<{ id: number; email: string; company_id: number }>(a.db, 'select id, email, company_id from contacts').find((c) => body.includes(c.email));
+  if (!m.authenticated) { logEvent(a.db, a.now(), 'meeting.unproven', { from: m.from, subject: m.subject.slice(0, 200) }); return true; }
+  if (REMINDER.test(m.subject)) return true;
+  const who = bookedContact(a, `${m.subject}\n${m.text}`);
   if (!who) return true;
   if (CANCELLED.test(m.subject)) {
     run(a.db, "update meetings set status = 'cancelled' where contact_id = ? and status = 'booked'", who.id);
@@ -48,20 +71,24 @@ function handleBooking(a: App, m: Incoming): boolean {
   return true;
 }
 
+/** One booked meeting a person: a reminder, an update or a new time does not make another. */
 export function addMeeting(a: App, contactId: number, source: string, title: string | null, messageId: string | null = null) {
   const c = one<{ company_id: number }>(a.db, 'select company_id from contacts where id = ?', contactId);
   if (!c) throw new Error(`No contact ${contactId}`);
+  if (one(a.db, "select 1 from meetings where contact_id = ? and status = 'booked'", contactId)) return;
   if (messageId && one(a.db, 'select 1 from meetings where message_id = ?', messageId)) return;
   run(a.db, 'insert into meetings (contact_id, source, title, message_id, booked_at) values (?, ?, ?, ?, ?)', contactId, source, title, messageId, a.now().toISOString());
   run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.company_id);
+  // They have a time now: an answer still waiting would only offer them the calendar again.
+  run(a.db, "update replies set suggested_status = 'dismissed' where suggested_status = 'pending' and contact_id in (select id from contacts where company_id = ?)", c.company_id);
   logEvent(a.db, a.now(), 'meeting.booked', { contact_id: contactId, source });
 }
 
-/** The answer to someone interested always carries the booking link: that step is too important to leave to the model. */
+/** Someone interested always gets a draft with the booking link, even if the model wrote none: this step is too important to leave to it. */
 export function withBookingLink(a: App, cls: string, suggested: string | null): string | null {
   const url = a.config.booking_url.trim();
-  if (!suggested || !url || cls !== 'interested' || suggested.includes(url)) return suggested;
-  return `${suggested.trimEnd()}\n\nPick a time here: ${url}`;
+  if (!url || cls !== 'interested' || suggested?.includes(url)) return suggested;
+  return `${suggested?.trimEnd() || 'Glad to talk it through.'}\n\nPick a time here: ${url}`;
 }
 
 const cancelRest = (a: App, contactId: number) => run(a.db, "update drafts set status = 'cancelled' where contact_id = ? and status in ('pending','approved','blocked')", contactId);
