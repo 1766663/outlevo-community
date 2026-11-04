@@ -22,6 +22,8 @@ async function readSite(a: App, domain: string, maxPages = MAX_PAGES): Promise<P
 const pagesFor = (pages: Page[]) => pages.map((p) => untrusted(p.url, p.text.slice(0, MAX_PAGE_CHARS))).join('\n\n');
 
 const FACT = obj({ kind: { type: 'string', enum: ['what_they_do', 'customers', 'hiring', 'funding', 'launch', 'leadership', 'pricing', 'tech', 'other'] }, text: S, quote: S, source_url: S, published_at: nullable('string') });
+// A search on the words of what we sell finds those who write about it: rivals and consultants in the same field, not buyers.
+const BUYER_RULE = 'A customer is a company with the problem. One that sells the same thing, or a service that does the same job for its own clients, is a rival or a partner, not a customer, even when it talks about the problem most.';
 const QUOTE_RULE = 'Every fact carries a quote: a short sentence copied word for word from the page, and that page\'s exact URL. No quote on the page, no fact. Do not infer, round or embellish.';
 
 export async function learnProduct(a: App, url = a.config.website) {
@@ -126,8 +128,8 @@ export async function discoverCompanies(a: App, count: number, brief?: string) {
     const want = Math.min(count - added.length, 25);
     const r = await m.searchJson<{ companies: Array<{ name: string; domain: string; why: string }> }>({
       name: 'discover_companies', maxSearches: 5, effort: 'medium',
-      system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article.`,
-      user: `Find ${want} companies for this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${[normalizeDomain(a.config.website), ...all<{ domain: string }>(a.db, 'select domain from companies order by id desc limit 500').map((c) => c.domain)].filter(Boolean).join(', ')}.`,
+      system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article. ${BUYER_RULE} So search by what the ICP's companies sell and who they are, not by the words of the product below, and spread across its industries and markets.`,
+      user: `We sell: ${one<{ summary: string }>(a.db, 'select summary from product')?.summary ?? ''}\n\nFind ${want} companies for this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${[normalizeDomain(a.config.website), ...all<{ domain: string }>(a.db, 'select domain from companies order by id desc limit 500').map((c) => c.domain)].filter(Boolean).join(', ')}.`,
       schema: obj({ companies: arr(obj({ name: S, domain: S, why: S })) }),
     });
     const before = added.length;
@@ -184,8 +186,8 @@ export async function researchCompany(a: App, companyId: number) {
 
   const v = await a.model().json<Verdict>({
     name: 'qualify', effort: 'medium',
-    system: `You decide whether a company fits an ideal customer profile, only from the facts given. ${UNTRUSTED} Unknown is not a match: name what is missing. Cite fact ids for each reason.`,
-    user: `ICP:\n${JSON.stringify(icp)}\n\nFacts about ${c.domain}:\n${untrusted(c.domain, known.map((f) => `[${f.id}] ${f.text} ("${f.quote}")`).join('\n'))}`,
+    system: `You decide whether a company fits an ideal customer profile, only from the facts given. ${UNTRUSTED} ${BUYER_RULE} If this one is, it does not fit. Unknown is not a match: name what is missing. Cite fact ids for each reason.`,
+    user: `We sell: ${one<{ summary: string }>(a.db, 'select summary from product')?.summary ?? ''}\n\nICP:\n${JSON.stringify(icp)}\n\nFacts about ${c.domain}:\n${untrusted(c.domain, known.map((f) => `[${f.id}] ${f.text} ("${f.quote}")`).join('\n'))}`,
     schema: obj({ fit: { type: 'boolean' }, score: { type: 'integer' }, reasons: arr(obj({ text: S, fact_id: { type: 'integer' } })), missing: arr(S) }),
   });
   const ids = new Set(known.map((f) => f.id));
@@ -243,15 +245,15 @@ type Recipient = { domain: string; company: string | null; company_id: number; t
 async function compose(a: App, r: Recipient) {
   const product = one<{ summary: string }>(a.db, 'select summary from product');
   const productFacts = all<{ text: string; quote: string }>(a.db, 'select text, quote from product_facts');
-  const facts = all<KnownFact & { kind: string; source_url: string }>(a.db, 'select id, kind, text, quote, source_url from facts where company_id = ?', r.company_id);
+  const facts = all<KnownFact & { kind: string; source_url: string; published_at: string | null }>(a.db, 'select id, kind, text, quote, source_url, published_at from facts where company_id = ?', r.company_id);
   if (!product || !facts.length) throw new Error('Nothing to write from: read the product and research the company first');
 
   const ask = (feedback: string) => a.model().json<Written>({
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
-First email: under 90 words, opens on one specific fact about this company, says what we do in one line, asks one easy question. No meeting request. Follow-ups: under 60 words, each adds something new, the last one closes the loop politely.
+First email: under 90 words, opens on one specific fact about this company, says what we do in one short line from their side, not a list of features, asks one easy question. No meeting request. Follow-ups: under 60 words, each opens on a different fact about this company where one fits, and says what that means for them, not a list of features, prices or terms. The last one closes the loop politely. Do not call anything news or recent unless its fact has a date within six months of today, ${iso(a).slice(0, 10)}.
 Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
-    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
+    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}${f.published_at ? `\n  Dated: ${f.published_at}` : ''}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
   // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.

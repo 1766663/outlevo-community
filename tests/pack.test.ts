@@ -116,6 +116,22 @@ describe('second check, and printed addresses', () => {
   });
 });
 
+describe('who it looks for', () => {
+  it('search and qualifying are told a rival is not a customer, and the writer gets the date of a fact', async () => {
+    const b = testApp({ pages, answers: { ...answers, research: { ...answers.research, facts: [{ ...answers.research.facts[0], published_at: '2020-01-01' }] } } }); let asked: any;
+    const m = b.model(); b.model = () => ({ ...m, searchJson: (async (r: any) => { asked = r; return { companies: [{ name: "N", domain: "northwind.com", why: "x" }] }; }) as any });
+    await learnProduct(b); await learnIcp(b, {}); const { added } = await discoverCompanies(b, 1);
+    expect(asked.system).toContain('is a rival or a partner, not a customer');
+    expect(asked.user).toContain('We sell: Sales ramp software');
+    const c = one<any>(b.db, 'select id from companies where domain = ?', added[0]);
+    await researchCompany(b, c.id); await writeForCompany(b, c.id);
+    expect((b.calls.find((x: any) => x.name === 'qualify') as any).system).toContain('is a rival or a partner');
+    const w = b.calls.find((x: any) => x.name === 'write') as any;
+    expect(w.user).toContain('Dated: 2020-01-01');
+    expect(w.system).toContain('Do not call anything news or recent');
+  });
+});
+
 describe('a refused email', () => {
   const bad = { subject: 'Numbers', body: 'You have 77 reps.', delay_days: 3, claims: [] };
   const first = (r: any) => answers.write(r).emails[0];
