@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkBounces, dailyLimit, inSendingHours, isStopped, OPT_OUT, readiness, ready, resumeSending, stopSending, suppress } from '../src/compliance.js';
+import { asksToStop, checkBounces, dailyLimit, inSendingHours, isStopped, isSuppressed, ownWords, readiness, ready, resumeSending, stopSending, suppress } from '../src/compliance.js';
 import { HARD_DAILY_LIMIT, DEFAULTS } from '../src/config.js';
 import { all, one, run } from '../src/db.js';
 import { addCompany, addContact, approve } from '../src/pipeline.js';
@@ -96,12 +96,69 @@ describe('sending', () => {
   });
 });
 
+describe('sending at the same time', () => {
+  it('two sends cannot both pass the limit or send one email twice', async () => {
+    const a = testApp(); approve(a, seed(a)); approve(a, seed(a, 'lee@contoso.com', 'contoso.com'));
+    a.config.limits.start_per_day = 1;
+    const results = await Promise.all([send(a), send(a), send(a), send(a)]);
+    expect(results.filter((r) => r.sent)).toHaveLength(1);
+    expect(a.sent).toHaveLength(1);
+  });
+  it('a failed send goes back in the queue', async () => {
+    const a = testApp(); const id = seed(a); approve(a, id);
+    (a as any).mailer = () => ({ send: async () => { throw new Error('smtp down'); } });
+    await expect(send(a)).rejects.toThrow('smtp down');
+    expect(one<any>(a.db, 'select status, sent_at from drafts where step = 1')).toEqual({ status: 'approved', sent_at: null });
+  });
+  it('refuses an address with a comma in it, whichever way it got in', async () => {
+    const a = testApp(); const id = seed(a);
+    approve(a, id);
+    run(a.db, "update contacts set email = 'x,sup@qz0.example' where id = ?", id);
+    const r = await send(a);
+    expect(r.sent).toBe(false);
+    expect(a.sent).toHaveLength(0);
+    expect(addContact(a, { company_id: 1, first_name: 'X', email: 'y,sup@qz0.example', email_source: 'imported' })).toBe(false);
+  });
+});
+
+describe('answers', () => {
+  const pending = async () => {
+    const a = testApp({ answers: { classify_reply: { class: 'interested', reason: 'x', suggested_reply: 'Sure.' } } }); seed(a);
+    await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 1, messageId: '<r@x>', from: 'dana@northwind.com', subject: 'Re: hi', text: 'Tell me more about it', receivedAt: TUESDAY_NOON }], lastUid: 1 }) });
+    return { a, id: one<any>(a.db, 'select id from replies').id as number };
+  };
+  it('stop holds answers too', async () => {
+    const { a, id } = await pending(); stopSending(a, 'test');
+    await expect(sendSuggestedReply(a, id, { checks: OK_CHECKS })).rejects.toThrow(/stopped/);
+    expect(a.sent).toHaveLength(0);
+  });
+  it('suppression holds answers too', async () => {
+    const { a, id } = await pending(); suppress(a, 'dana@northwind.com', 'x');
+    await expect(sendSuggestedReply(a, id, { checks: OK_CHECKS })).rejects.toThrow(/suppressed/);
+    expect(a.sent).toHaveLength(0);
+  });
+  it('readiness holds answers too', async () => {
+    const { a, id } = await pending();
+    await expect(sendSuggestedReply(a, id, { checks: async () => [{ name: 'SPF', ok: false, blocking: true, detail: '' }] })).rejects.toThrow(/Not ready/);
+    expect(one<any>(a.db, 'select suggested_status from replies').suggested_status).toBe('pending');
+  });
+});
+
 describe('suppression', () => {
   it('cancels what is waiting and blocks the address', async () => {
     const a = testApp(); approve(a, seed(a));
     suppress(a, 'dana@northwind.com', 'asked');
     expect((await send(a)).sent).toBe(false);
     expect(all<any>(a.db, 'select status from drafts').every((d) => d.status === 'cancelled')).toBe(true);
+  });
+  it('covers subdomains and however an entry was written', () => {
+    const a = testApp();
+    suppress(a, 'example.org', 'x');
+    expect(isSuppressed(a, 'x@sub.example.org')).toBeTruthy();
+    a.config.do_not_contact = ['@acme.com', 'www.beta.com', 'https://gamma.com/about', 'Exact@Delta.com'];
+    for (const e of ['x@acme.com', 'x@mail.beta.com', 'y@gamma.com', 'exact@delta.com']) expect(isSuppressed(a, e), e).toBeTruthy();
+    expect(isSuppressed(a, 'other@delta.com')).toBeNull();
+    expect(isSuppressed(a, 'x@notacme.com')).toBeNull();
   });
   it('a whole domain, and the do-not-contact list, block at the moment of sending', async () => {
     const a = testApp(); approve(a, seed(a));
@@ -143,6 +200,28 @@ describe('limits', () => {
     }
     expect(checkBounces(a)).toBe(true);
     expect(isStopped(a)).toMatch(/8\.0%/);
+  });
+  it('catches a bad list early, and is not fooled by follow-ups or by one bounce', () => {
+    const a = testApp();
+    const c = addCompany(a, 'x.example', 'manual');
+    const person = (i: number, bounced: boolean) => {
+      addContact(a, { company_id: c.id, first_name: 'P', email: `q${i}@x.example`, email_source: 'imported' });
+      const p = one<any>(a.db, 'select id from contacts where email = ?', `q${i}@x.example`);
+      for (const step of [1, 2, 3]) run(a.db, `insert into drafts (contact_id, step, subject, body, claims, lint, status, created_at, sent_at) values (?, ?, 's', 'b', '[]', '[]', 'sent', 'x', '2026-11-01')`, p.id, step);
+      if (bounced) run(a.db, "update contacts set status = 'bounced' where id = ?", p.id);
+    };
+    person(0, true); person(1, false);
+    expect(checkBounces(a)).toBe(false);
+    person(2, true); person(3, true);
+    expect(checkBounces(a)).toBe(true);
+    resumeSending(a);
+    expect(checkBounces(a)).toBe(false);
+  });
+  it('a nonsense warm-up date never means no limit', () => {
+    const c = structuredClone(DEFAULTS); c.warmup_start = '2026-1101';
+    expect(dailyLimit(c, TUESDAY_NOON)).toBe(5);
+    c.limits.max_per_day = Number('x');
+    expect(dailyLimit(c, TUESDAY_NOON)).toBe(5);
   });
 });
 
@@ -190,9 +269,9 @@ describe('replies', () => {
     expect(a.sent).toHaveLength(0);
     const r = one<any>(a.db, 'select id, suggested_status from replies');
     expect(r.suggested_status).toBe('pending');
-    await sendSuggestedReply(a, r.id);
+    await sendSuggestedReply(a, r.id, { checks: OK_CHECKS });
     expect(a.sent[0]!.inReplyTo).toBe('<r0@x>');
-    await expect(Promise.resolve().then(() => sendSuggestedReply(a, r.id))).rejects.toThrow(/no answer waiting/);
+    await expect(sendSuggestedReply(a, r.id, { checks: OK_CHECKS })).rejects.toThrow(/no answer waiting/);
   });
   it('a bounce marks the address, suppresses it and sends no more', async () => {
     const a = classified({}); approve(a, seed(a));
@@ -213,7 +292,47 @@ describe('replies', () => {
     expect(all(a.db, 'select 1 from replies')).toHaveLength(1);
   });
   it('recognises the usual ways of saying stop', () => {
-    for (const t of ['stop', 'STOP.', 'Unsubscribe', 'please take me off this', "don't email me", 'not interested, thanks']) expect(OPT_OUT.test(t)).toBe(true);
-    expect(OPT_OUT.test('This could help us stop losing deals')).toBe(false);
+    for (const t of ['stop', 'STOP.', 'Stop, thanks', 'Please stop', 'Stop sending me emails', 'Unsubscribe', 'please take me off this', "don't email me", 'not interested, thanks', 'GDPR: delete my data', 'Por favor darme de baja', 'Bitte abmelden', 'Merci de me désabonner', 'Proszę nie pisać', 'Отпишите меня']) expect(asksToStop('Re: hi', t), t).toBe(true);
+    expect(asksToStop('STOP', '')).toBe(true);
+  });
+  it('does not take interest, or talk about stopping, for a request to stop', () => {
+    for (const t of ['This could help us stop losing deals', 'I am not interested in the cheap plan, but I would like a demo', 'To unsubscribe from our newsletter click here to see our offers today', 'Does your tool stop emailing people who ask? We want a demo']) expect(asksToStop('Re: hi', t), t).toBe(false);
+  });
+  it('reads a reply below a quote, and not the quote or our own footer', () => {
+    expect(asksToStop('Re: hi', 'On Tue, Sam wrote:\n> We help teams.\n\nPlease stop')).toBe(true);
+    expect(asksToStop('Re: hi', '> please stop emailing me\nYes, tell me more about it.')).toBe(false);
+    expect(asksToStop('Re: hi', 'Sounds good, tell me more.\n\n--\nSam Lee\nNot for you? Reply "stop" and I won\'t write again.')).toBe(false);
+    expect(ownWords('Yes please.\n> quoted')).toBe('Yes please.');
+  });
+  it('an opt-out from an alias or a colleague counts, and an out-of-office does not end anything', async () => {
+    const a = classified({}); const id = seed(a, 'olive+tag@northwind.com'); approve(a, id);
+    await send(a);
+    await checkReplies(a, inbox([{ from: 'olive@northwind.com', text: 'Please remove me.' }]));
+    expect(isSuppressed(a, 'olive+tag@northwind.com')).toBeTruthy();
+    expect(isSuppressed(a, 'olive@northwind.com')).toBeTruthy();
+    const b = classified({}); approve(b, seed(b));
+    await send(b);
+    await checkReplies(b, inbox([{ from: 'assistant@northwind.com', text: 'Please take Dana off your list, remove me too.' }]));
+    expect(isSuppressed(b, 'dana@northwind.com')).toBeTruthy();
+    expect(one<any>(b.db, 'select status from drafts where step = 2').status).toBe('cancelled');
+  });
+  it('a reply on our thread from another address is theirs, by its headers', async () => {
+    const a = classified({ class: 'not_now', reason: 'Later', suggested_reply: null }); approve(a, seed(a));
+    await send(a);
+    await checkReplies(a, inbox([{ from: 'someone@forward.example', inReplyTo: '<m1@test>', text: 'Ask me next year.' }]));
+    expect(one<any>(a.db, 'select status from drafts where step = 2').status).toBe('cancelled');
+  });
+  it('an out-of-office leaves the sequence going', async () => {
+    const a = classified({}); approve(a, seed(a));
+    await send(a);
+    await checkReplies(a, inbox([{ from: 'dana@northwind.com', autoSubmitted: true, text: 'I am away until Monday.' }]));
+    expect(one<any>(a.db, 'select class from replies').class).toBe('out_of_office');
+    expect(one<any>(a.db, 'select status from drafts where step = 2').status).toBe('approved');
+  });
+  it('a stranger leaves a trace and nothing else', async () => {
+    const a = classified({}); seed(a);
+    await checkReplies(a, inbox([{ from: 'stranger@else.example', text: 'Buy my thing' }]));
+    expect(one<any>(a.db, "select count(*) as n from events where kind = 'mail.unmatched'").n).toBe(1);
+    expect(all(a.db, 'select 1 from replies')).toHaveLength(0);
   });
 });

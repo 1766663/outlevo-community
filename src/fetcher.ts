@@ -1,5 +1,7 @@
+import { lookup as dnsLookup } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 export const USER_AGENT = 'OutlevoCommunityBot/0.1 (+https://outlevo.com)';
 const MAX_BYTES = 1_500_000;
@@ -8,18 +10,51 @@ const TIMEOUT_MS = 12_000;
 export type Page = { url: string; text: string; links: string[]; title: string | null };
 export type PageFetcher = (url: string) => Promise<Page | null>;
 
-export function isPrivateAddress(ip: string): boolean {
-  const v = ip.toLowerCase();
-  if (isIP(v) === 6) {
-    if (v === '::1' || v === '::' || /^f[cd]/.test(v) || /^fe[89ab]/.test(v)) return true;
-    const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mapped ? isPrivateAddress(mapped[1]!) : false;
-  }
-  const p = v.split('.').map(Number);
+const privateV4 = (p: number[]) => {
   const [a = 0, b = 0] = p;
   return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
     || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19));
+};
+/** The eight 16-bit groups of any spelling of an IPv6 address. */
+function groups(ip: string): number[] | null {
+  let v = ip.toLowerCase().split('%')[0]!;
+  const dotted = v.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (dotted) v = `${dotted[1]}${((Number(dotted[2]) << 8) | Number(dotted[3])).toString(16)}:${((Number(dotted[4]) << 8) | Number(dotted[5])).toString(16)}`;
+  const [head = '', tail] = v.split('::');
+  const left = head ? head.split(':') : []; const right = tail ? tail.split(':') : [];
+  const fill = tail === undefined ? 0 : 8 - left.length - right.length;
+  if (fill < 0) return null;
+  const all = [...left, ...Array<string>(fill).fill('0'), ...right].map((x) => parseInt(x, 16));
+  return all.length === 8 && all.every((n) => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? all : null;
 }
+const v4From = (hi: number, lo: number) => [hi >> 8, hi & 255, lo >> 8, lo & 255];
+
+export function isPrivateAddress(ip: string): boolean {
+  if (isIP(ip) === 4) return privateV4(ip.split('.').map(Number));
+  const g = groups(ip);
+  if (!g) return true; // what cannot be read is not fetched
+  const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = g;
+  if (g.every((x) => x === 0) || (g.slice(0, 7).every((x) => x === 0) && g7 === 1)) return true; // :: and ::1
+  if ((g0 & 0xfe00) === 0xfc00 || (g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0 || (g0 & 0xff00) === 0xff00) return true; // unique local, link local, site local, multicast
+  if (g0 === 0x2001 && g1 === 0x0db8) return true; // documentation
+  // IPv4 inside IPv6: mapped, compatible, NAT64, 6to4, Teredo. Each can lead back to a private IPv4 address.
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && (g5 === 0xffff || g5 === 0)) return privateV4(v4From(g6, g7));
+  if (g0 === 0x64 && g1 === 0xff9b) return privateV4(v4From(g6, g7));
+  if (g0 === 0x2002) return privateV4(v4From(g1, g2));
+  if (g0 === 0x2001 && g1 === 0) return true;
+  return false;
+}
+
+// Checked again at the moment of connecting, so a name that resolved to a public address a moment ago cannot switch to a private one.
+const pinned = new Agent({ connect: { lookup: (host: string, options: any, cb: any) => {
+  dnsLookup(host, { all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs.length || addrs.some((x) => isPrivateAddress(x.address))) return cb(new Error(`Refused a private address for ${host}`));
+    if (options?.all) return cb(null, addrs);
+    return cb(null, addrs[0]!.address, addrs[0]!.family);
+  });
+} } });
+const pinnedFetch = ((url: string, init: any) => undiciFetch(url, { ...init, dispatcher: pinned })) as unknown as typeof fetch;
 
 // A prospect's website is untrusted: it must not be able to point this machine at its own network.
 export async function assertPublicUrl(raw: string, resolve = lookup): Promise<URL> {
@@ -104,7 +139,7 @@ async function readCapped(res: Response): Promise<string> {
 }
 
 /** One page, or null when robots.txt says no, it is not HTML, or it is not there. */
-export function makeFetcher(doFetch: typeof fetch = fetch): PageFetcher {
+export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
   const robots = new Map<string, string>();
   return async (raw) => {
     const u = new URL(raw);

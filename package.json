@@ -26,7 +26,8 @@
     "@anthropic-ai/sdk": "^1.4.0",
     "imapflow": "^2.10.0",
     "mailparser": "^3.14.1",
-    "nodemailer": "^10.3.1"
+    "nodemailer": "^10.3.1",
+    "undici": "^8.12.3"
   },
   "devDependencies": {
     "@types/mailparser": "^3.9.0",

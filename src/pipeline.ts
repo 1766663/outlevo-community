@@ -64,13 +64,20 @@ export async function learnIcp(a: App, opts: { won?: string; lost?: string; brie
   });
   run(a.db, 'insert into icp (id, body, source, updated_at) values (1, ?, ?, ?) on conflict (id) do update set body = excluded.body, source = excluded.source, updated_at = excluded.updated_at', JSON.stringify(icp), won.length || lost.length ? 'deals' : 'website', iso(a));
   logEvent(a.db, a.now(), 'icp.learned', { won: won.length, lost: lost.length });
-  return icp;
+  return { ...icp, deals_read: { won: won.length, lost: lost.length } };
 }
 export const getIcp = (a: App) => { const r = one<{ body: string }>(a.db, 'select body from icp'); return r ? (JSON.parse(r.body) as Icp) : null; };
+
+export class OwnCompany extends Error {}
+const isOwnDomain = (a: App, domain: string) => {
+  const own = [a.config.website, one<{ url: string }>(a.db, 'select url from product')?.url ?? '', a.config.sender.email.split('@')[1] ?? ''].map((x) => normalizeDomain(x)).filter(Boolean) as string[];
+  return own.some((d) => domain === d || domain.endsWith(`.${d}`));
+};
 
 export function addCompany(a: App, input: string, source: string, name?: string): { id: number; domain: string; added: boolean } {
   const domain = normalizeDomain(input);
   if (!domain) throw new Error(`Not a domain: ${input}`);
+  if (isOwnDomain(a, domain)) throw new OwnCompany(`${domain} is your own company`);
   const seen = one<{ id: number }>(a.db, 'select id from companies where domain = ?', domain);
   if (seen) return { id: seen.id, domain, added: false };
   const r = run(a.db, 'insert into companies (domain, name, source, created_at) values (?, ?, ?, ?)', domain, name ?? null, source, iso(a));
@@ -78,13 +85,15 @@ export function addCompany(a: App, input: string, source: string, name?: string)
 }
 
 export function importCompanies(a: App, path: string) {
-  let added = 0; const skipped: string[] = [];
+  let added = 0; let duplicates = 0; const skipped: Array<{ row: string; reason: string }> = [];
   for (const row of parseCsv(readFileSync(path, 'utf8'))) {
     const v = row.domain ?? row.website ?? row.company_domain ?? '';
-    try { if (addCompany(a, v, 'csv', row.name ?? row.company).added) added++; } catch { skipped.push(v); }
+    if (!v) { skipped.push({ row: JSON.stringify(row).slice(0, 80), reason: 'no domain column or value' }); continue; }
+    try { if (addCompany(a, v, 'csv', row.name ?? row.company).added) added++; else duplicates++; }
+    catch (e) { skipped.push({ row: v.slice(0, 80), reason: e instanceof OwnCompany ? 'your own company' : 'not a domain' }); }
   }
-  logEvent(a.db, a.now(), 'companies.imported', { added, skipped: skipped.length });
-  return { added, skipped };
+  logEvent(a.db, a.now(), 'companies.imported', { added, duplicates, skipped: skipped.length });
+  return { added, duplicates, skipped };
 }
 
 /** Web search through the model. Every company it names is still read and checked before anything is written. */
@@ -100,7 +109,10 @@ export async function discoverCompanies(a: App, count: number, brief?: string) {
     schema: obj({ companies: arr(obj({ name: S, domain: S, why: S })) }),
   });
   const added: string[] = [];
-  for (const c of r.companies.slice(0, count)) { try { const x = addCompany(a, c.domain, 'discover', c.name); if (x.added) added.push(x.domain); } catch { /* the model named something that is no domain */ } }
+  for (const c of r.companies) {
+    if (added.length >= count) break;
+    try { const x = addCompany(a, c.domain, 'discover', c.name); if (x.added) added.push(x.domain); } catch { /* your own company, or the model named something that is no domain */ }
+  }
   logEvent(a.db, a.now(), 'companies.discovered', { added: added.length });
   return { added };
 }
@@ -158,7 +170,8 @@ export async function researchCompany(a: App, companyId: number) {
 }
 
 export type NewContact = { company_id: number; first_name: string; last_name?: string | null; title?: string | null; email: string; email_source: 'imported' | 'published' | 'guess' | 'verified'; cloud_id?: string };
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const PERSONAL = /@(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|proton|protonmail|gmx|mail|yandex|zoho)\.[a-z.]+$/i;
 export function addContact(a: App, n: NewContact): boolean {
   const email = n.email.trim().toLowerCase();
   if (!EMAIL.test(email)) return false;
@@ -168,18 +181,24 @@ export function addContact(a: App, n: NewContact): boolean {
 }
 
 export function importContacts(a: App, path: string) {
-  let added = 0; const skipped: string[] = [];
+  let added = 0; let duplicates = 0; const newCompanies: string[] = []; const skipped: Array<{ row: string; reason: string }> = [];
   for (const row of parseCsv(readFileSync(path, 'utf8'))) {
-    const email = row.email ?? ''; const domain = row.domain ?? row.website ?? row.company_domain ?? email.split('@')[1] ?? '';
+    const email = (row.email ?? row.email_address ?? '').trim(); const domain = row.domain ?? row.website ?? row.company_domain ?? email.split('@')[1] ?? '';
     const first = row.first_name ?? row.firstname ?? (row.name ?? '').split(' ')[0] ?? '';
-    if (!first || !EMAIL.test(email)) { skipped.push(email || JSON.stringify(row)); continue; }
+    const label = (email || JSON.stringify(row)).slice(0, 80);
+    if (!email) { skipped.push({ row: label, reason: 'no email' }); continue; }
+    if (!EMAIL.test(email)) { skipped.push({ row: label, reason: 'not a single valid email address' }); continue; }
+    if (PERSONAL.test(email)) { skipped.push({ row: label, reason: 'a personal address, not a work one' }); continue; }
+    if (!first) { skipped.push({ row: label, reason: 'no first name' }); continue; }
     try {
       const c = addCompany(a, domain, 'csv', row.company);
+      if (c.added) newCompanies.push(c.domain);
       if (addContact(a, { company_id: c.id, first_name: first, last_name: row.last_name ?? row.lastname ?? ((row.name ?? '').split(' ').slice(1).join(' ') || null), title: row.title ?? row.job_title, email, email_source: 'imported' })) added++;
-    } catch { skipped.push(email); }
+      else duplicates++;
+    } catch (e) { skipped.push({ row: label, reason: e instanceof OwnCompany ? 'your own company' : `no usable company domain (${domain})` }); }
   }
-  logEvent(a.db, a.now(), 'contacts.imported', { added, skipped: skipped.length });
-  return { added, skipped };
+  logEvent(a.db, a.now(), 'contacts.imported', { added, duplicates, new_companies: newCompanies.length, skipped: skipped.length });
+  return { added, duplicates, new_companies: newCompanies, skipped };
 }
 
 type Written = { angle: string; emails: Array<{ subject: string; body: string; delay_days: number; claims: Claim[] }> };
@@ -210,11 +229,27 @@ Only state what the facts say. Each statement about the prospect is a claim: cop
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
 
-  let seq = await ask(''); let issues = lintSequence(a, seq, facts, row.domain);
+  // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.
+  const reread = async (seq: Written) => {
+    const r = await a.model().json<{ unsupported: Array<{ email: number; statement: string }> }>({
+      name: 'verify_email', effort: 'medium',
+      system: `You check cold emails against quotes from a company's own website. ${UNTRUSTED} List every statement about the recipient or their company that the quotes do not plainly support, including anything hinted at. A question, or a statement about the sender, is not one. If all is supported, the list is empty.`,
+      user: `Quotes:\n${untrusted(row.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${seq.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
+      schema: obj({ unsupported: arr(obj({ email: { type: 'integer' }, statement: S })) }),
+    });
+    return r.unsupported ?? [];
+  };
+  const checked = async (seq: Written) => {
+    const out = lintSequence(a, seq, facts, row.domain);
+    if (out.some(hasErrors)) return out;
+    for (const u of await reread(seq)) (out[Math.max(0, u.email - 1)] ??= []).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
+    return out;
+  };
+  let seq = await ask(''); let issues = await checked(seq);
   if (issues.some(hasErrors)) {
     const list = issues.flatMap((x, i) => x.filter((y) => y.level === 'error').map((y) => `Email ${i + 1}: ${y.message}`)).join('\n');
     seq = await ask(`\n\nYour last try was refused:\n${list}\nFix every one of these.`);
-    issues = lintSequence(a, seq, facts, row.domain);
+    issues = await checked(seq);
   }
   const emails = seq.emails.slice(0, 3); const blocked = issues.slice(0, 3).some(hasErrors);
   a.db.exec('begin');
@@ -258,7 +293,7 @@ export function reviewQueue(a: App) {
     where d.status in ('pending','blocked') order by d.contact_id, d.step`);
   const byContact = new Map<number, any>();
   for (const d of drafts) {
-    const g = byContact.get(d.contact_id) ?? { contact_id: d.contact_id, name: `${d.first_name} ${d.last_name ?? ''}`.trim(), title: d.title, email: d.email, email_source: d.email_source, domain: d.domain, company: d.company, score: d.score, status: d.status, angle: d.angle, emails: [], company_id: d.company_id };
+    const g = byContact.get(d.contact_id) ?? { why: JSON.parse(one<{ reasons: string | null }>(a.db, 'select reasons from companies where id = ?', d.company_id)?.reasons ?? '{}').reasons?.map((r: { text: string }) => r.text) ?? [], contact_id: d.contact_id, name: `${d.first_name} ${d.last_name ?? ''}`.trim(), title: d.title, email: d.email, email_source: d.email_source, domain: d.domain, company: d.company, score: d.score, status: d.status, angle: d.angle, emails: [], company_id: d.company_id };
     const claims: Claim[] = JSON.parse(d.claims);
     g.emails.push({ step: d.step, subject: d.subject, body: d.body, delay_days: d.delay_days, issues: JSON.parse(d.lint),
       claims: claims.map((c) => ({ ...c, source: one(a.db, 'select quote, source_url, fetched_at from facts where id = ?', c.fact_id) ?? null })) });

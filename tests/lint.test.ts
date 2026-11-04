@@ -37,6 +37,28 @@ describe('lintEmail', () => {
   it('still refuses fake history in a file check', () => { expect(hasErrors(lintEmail({ subject: 'Re: hi', body: 'x', strict: false }))).toBe(true); });
 });
 
+describe('outlevo check on an honest email', () => {
+  const clean = (body: string) => lintEmail({ subject: 'A question', body, strict: false });
+  it('raises no alarm on ordinary words and figures', () => {
+    expect(clean('We improve cashflow in Q3 2026. It runs 24/7, from $29, in 30 minutes, for the top 10 teams.')).toEqual([]);
+    expect(hasErrors(clean('As discussed in your 2025 blog post, hiring is hard.'))).toBe(false);
+  });
+  it('still points at a figure it cannot check', () => {
+    expect(clean('Teams grow 312% with us.').map((i) => i.rule)).toContain('check-number');
+  });
+  it('says how to give a subject', () => {
+    expect(lintEmail({ subject: '', body: 'x', strict: false })[0]!.message).toMatch(/Subject:/);
+  });
+});
+
+describe('numbers against the page', () => {
+  it('a number only the model wrote in its summary of a fact does not count', () => {
+    const facts = [{ id: 1, text: 'Hiring 40 people', quote: 'We are hiring in Austin this year' }];
+    const r = lintEmail({ subject: 'Hi', body: 'You are hiring 40 people in Austin.', step: 1, claims: [{ text: 'hiring 40 people', fact_id: 1 }], facts });
+    expect(r.map((x) => x.rule)).toContain('unsourced-number');
+  });
+});
+
 describe('parseEmailFile', () => {
   it('reads the subject line and the body', () => { expect(parseEmailFile('Subject: Hi\n\nBody here\n')).toEqual({ subject: 'Hi', body: 'Body here' }); });
   it('takes a file with no subject as the body', () => { expect(parseEmailFile('Body only')).toEqual({ subject: '', body: 'Body only' }); });

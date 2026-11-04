@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -38,8 +38,13 @@ create table if not exists usage (day text not null, kind text not null, count i
 export type Db = DatabaseSync;
 
 export function openDb(home: string): Db {
-  mkdirSync(home, { recursive: true });
-  return openPath(join(home, 'outlevo.db'));
+  // Prospects and their replies live here: nobody else on this computer has a reason to read them.
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(home, 0o700);
+  const path = join(home, 'outlevo.db');
+  if (!existsSync(path)) closeSync(openSync(path, 'a', 0o600));
+  chmodSync(path, 0o600);
+  return openPath(path);
 }
 
 export function openPath(path: string): Db {

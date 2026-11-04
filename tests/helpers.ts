@@ -18,7 +18,7 @@ export function testApp(opts: { pages?: Record<string, Page>; answers?: Record<s
   const model: Model = {
     json: async <T,>(r: JsonRequest) => {
       calls.push(r);
-      const ans = opts.answers?.[r.name];
+      const ans = opts.answers?.[r.name] ?? (r.name === 'verify_email' ? { unsupported: [] } : undefined);
       if (ans === undefined) throw new Error(`No answer for ${r.name}`);
       return (typeof ans === 'function' ? ans(r) : ans) as T;
     },

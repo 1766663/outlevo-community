@@ -8,7 +8,7 @@ export type LintInput = {
 };
 
 const SPAM = ['act now', 'limited time', 'guarantee', '100% free', 'risk-free', 'no obligation', 'click here', 'buy now', 'cash', 'winner', 'double your', 'once in a lifetime', 'urgent'];
-const FAKE_HISTORY = /\b(as (we )?(discussed|promised|agreed)|following up on our (call|chat|conversation)|per our (call|conversation)|great (talking|speaking|chatting) (to|with) you|nice (to|meeting) you (again|last)|when we (spoke|talked|met))\b/i;
+const FAKE_HISTORY = /\b(as (we )?(discussed|promised|agreed)\b(?! (in|on) (your|the|their))|following up on our (call|chat|conversation)|per our (call|conversation)|great (talking|speaking|chatting) (to|with) you|nice (to|meeting) you (again|last)|when we (spoke|talked|met))\b/i;
 const MACHINE = /\b(i hope this (email|message) finds you|i came across your (company|profile|website)|hope you('| a)re (doing )?well|in today'?s fast-paced|leverage synerg|unlock (the )?(full )?potential|game-?changer|revolutionize|seamless(ly)? integrat)\b/i;
 const NUMBER = /(?<![\w.])[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:%|k\b|m\b|bn?\b)?/gi;
 
@@ -24,7 +24,7 @@ export function lintEmail(i: LintInput): LintIssue[] {
   const hard = strict ? 'error' : 'warning';
   const all = `${i.subject}\n${i.body}`;
 
-  if (!i.subject.trim()) add('error', 'subject-empty', 'The subject is empty');
+  if (!i.subject.trim()) add('error', 'subject-empty', strict ? 'The subject is empty' : 'No subject found: start the file with a line like Subject: Your subject');
   if (!i.body.trim()) add('error', 'body-empty', 'The body is empty');
   if (/^\s*(re|fw|fwd)\s*:/i.test(i.subject) && step === 1) add('error', 'fake-thread', 'A first email must not pretend to be a reply or a forward');
   if (FAKE_HISTORY.test(all)) add('error', 'fake-history', 'It claims a past conversation');
@@ -36,7 +36,7 @@ export function lintEmail(i: LintInput): LintIssue[] {
   if (i.subject.length > 70) add('warning', 'subject-long', 'The subject is over 70 characters');
   if (i.subject.length > 6 && i.subject === i.subject.toUpperCase() && /[A-Z]/.test(i.subject)) add('error', 'subject-caps', 'The subject is in capitals');
   if (/!{2,}|\?{2,}/.test(all)) add('warning', 'punctuation', 'Repeated punctuation reads as spam');
-  for (const w of SPAM) if (new RegExp(`\\b${w.replace(/[%-]/g, '\\$&')}`, 'i').test(all)) add('warning', 'spam-word', `Spam-filter phrase: "${w}"`);
+  for (const w of SPAM) if (new RegExp(`\\b${w.replace(/[%-]/g, '\\$&')}(d|s)?\\b`, 'i').test(all)) add('warning', 'spam-word', `Spam-filter phrase: "${w}"`);
   if (MACHINE.test(all)) add('warning', 'machine-writing', 'A stock opener or phrase that reads as machine-written');
 
   const links = [...i.body.matchAll(/https?:\/\/[^\s)>\]]+/gi)].map((m) => m[0]);
@@ -45,7 +45,11 @@ export function lintEmail(i: LintInput): LintIssue[] {
     let host = ''; try { host = new URL(l).hostname.replace(/^www\./, ''); } catch { /* reported below */ }
     if (!i.allowedLinkDomains.some((d) => host === d || host.endsWith(`.${d}`))) add('error', 'link-domain', `A link goes to ${host || l}, which is neither your site nor the prospect's`);
   }
-  if (!strict) return out;
+  if (!strict) {
+    // With no sources to hold it against, it can only point at the figures most often made up.
+    for (const m of all.matchAll(/(?<![\w.])\d[\d,.]*\s?(%|x\b)/gi)) add('warning', 'check-number', `"${m[0].trim()}": is this true for this person? outlevo check has no sources to hold it against`);
+    return out;
+  }
 
   // Every claim names a fact we read on a page, and the words really are in the email.
   const facts = new Map((i.facts ?? []).map((f) => [f.id, f]));
@@ -59,8 +63,9 @@ export function lintEmail(i: LintInput): LintIssue[] {
 
   // A number nobody can trace is the commonest invention: it has to be in a cited fact or in a fact about the product.
   const known = new Set<string>();
-  for (const c of claims) { const f = facts.get(c.fact_id); if (f) for (const n of numbersIn(`${f.text} ${f.quote}`)) known.add(n); }
-  for (const f of i.productFacts ?? []) for (const n of numbersIn(`${f.text} ${f.quote}`)) known.add(n);
+  // From the quote, which code found on the page, never from the model's own wording of it.
+  for (const c of claims) { const f = facts.get(c.fact_id); if (f) for (const n of numbersIn(f.quote)) known.add(n); }
+  for (const f of i.productFacts ?? []) for (const n of numbersIn(f.quote)) known.add(n);
   for (const m of all.matchAll(NUMBER)) if (!known.has(normalizeNumber(m[0]))) add('error', 'unsourced-number', `"${m[0].trim()}" is not in any fact this email cites`);
   return out;
 }

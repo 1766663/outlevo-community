@@ -1,8 +1,8 @@
 # Outlevo Community
 
-**The open-source AI SDR for B2B. An alternative to 11x, Artisan and Apollo's outreach, from your website to a meeting in your calendar. It runs on your machine, and every claim in every email has a source you can check.**
+**The open-source AI SDR for B2B. An alternative to 11x, Artisan and Apollo's outreach, from your website to a meeting in your calendar. It runs on your machine, and its emails are built on quotes from each company's own site, checked before they can go.**
 
-The software is free. You connect your own mailbox and your own source of contacts, the way you bring your own auditor to an open-source compliance tool. If you would rather have all of it ready to go, that is [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme).
+The software is free. **You bring:** an Anthropic API key, a mailbox on a separate domain you own, and a source of contacts (your own Hunter key or a list). If you would rather have mailboxes and contacts ready to go, that is [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme), from $29 a month.
 
 ```bash
 outlevo start https://yourcompany.com
@@ -25,8 +25,8 @@ An illustration with a made-up company. Nothing goes out until you run `outlevo 
 
 ## What makes it different
 
-- **Claims are checked by code, not trusted.** A fact is kept only if its quote is really on the page it names. A number in an email must appear in a fact that email cites. If an email breaks a rule, the model gets one more try. After that the email is blocked and cannot be approved.
-- **It learns from your deals.** Give it the companies you won and lost, and the ICP comes from what they show, not from a filter list.
+- **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number in an email must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets one more try, and after that it is blocked and cannot be approved.
+- **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
 - **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
 - **Nothing sends without you.** Every sequence waits for your approval. The answers it drafts to replies wait too. Community has no autopilot.
@@ -79,7 +79,7 @@ outlevo run        # replies, send, contacts, write, research, every 5 minutes
 
 A new mailbox needs 2-4 weeks of warm-up before real volume, with a warm-up service of your choice. So expect the first meetings some weeks after you start, and no number of them is promised.
 
-Bookings are counted from the emails Calendly, Cal.com and Google Calendar send you, and only when your mail provider has verified the sender (DKIM or DMARC, in the `Authentication-Results` header). If yours adds no such header, record them by hand with `outlevo meetings add <contact-id>`.
+Bookings are counted from the emails Calendly, Cal.com and Google Calendar send you, and only when your mail provider has verified the sender (DKIM or DMARC, in the `Authentication-Results` header). If yours adds no such header, record them by hand with `outlevo meetings add <contact-id>`, and know that a forger could add one of their own.
 
 `outlevo --help` lists every command, and `--json` makes any of them easy for scripts and agents. To let an AI coding agent drive it, see [skills/outlevo/SKILL.md](skills/outlevo/SKILL.md).
 
@@ -87,7 +87,7 @@ Bookings are counted from the emails Calendly, Cal.com and Google Calendar send 
 
 | | What Community does instead | What you still bring |
 |---|---|---|
-| 11x, Artisan | Research, emails, replies, the path to a meeting, with your approval at each send | Mailbox, contacts |
+| 11x, Artisan | Research, email, replies, the path to a meeting, with your approval at each send. Email only: no LinkedIn or phone | Mailbox, contacts |
 | Apollo | Sequences and AI writing | Contacts: there is no built-in database |
 | Clay | AI research on company sites, with a quote for every answer | Other data providers |
 
@@ -97,23 +97,25 @@ These are in the code, and each has a test.
 
 | Rule | How |
 |---|---|
-| Approved emails only | A send picks only what a person approved, and checks it again at that moment |
+| Approved emails only | A send picks only what a person approved, and checks it again at that moment. `approve` and `answer` need a person at a terminal, or the dashboard |
 | Unsourced claims do not go out | The checks in [`src/lint.ts`](src/lint.ts) run when written and again when sent |
 | No fake threads or fake history | No "Re:" on a first email, no "as we discussed" |
-| Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` header. A reply saying stop suppresses the address without calling the model |
-| A reply stops the sequence | For that person and for the rest of their company |
+| Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
+| A reply stops the sequence | For that person and for the rest of their company. An out-of-office does not |
 | No guessed addresses | Addresses come from your import, from a page that prints them, or from a verification service |
-| Volume stays low | Ramps from your warm-up date, with a hard ceiling of 50 a day and a gap between emails. Business hours only |
-| It stops itself | Bounces over 3% stop all sending, and `outlevo stop` does the same at any time |
+| Volume stays low | Ramps from your warm-up date, with a ceiling of 50 a day that settings cannot raise. By default, one email every 4 minutes in business hours on weekdays, which you can change |
+| It stops itself | Sending stops when over 3% of the last 200 people bounced, once there are 20 people or 3 bounces to go on. `outlevo stop` stops everything at any time, answers included |
 | It needs your domain set up | No SPF, DMARC or postal address, no sending |
 
 It also respects `robots.txt`, will not fetch private network addresses, treats everything from the web and every reply as data rather than instructions, and gives the model no tools when it reads them.
+
+These rules protect you from mistakes, and from a coding agent ignoring its instructions, but not from someone determined on your own machine: it is open source, and `OUTLEVO_ALLOW_SCRIPTED_APPROVAL=1` exists for people who want their own automation.
 
 You are the sender, and the law applies to you (CAN-SPAM, GDPR, CASL and others). None of this is legal advice.
 
 ## Where your data lives
 
-Everything is in `.outlevo/` next to where you run it: a SQLite database, your config, and a private secrets file. It goes only to the model provider you choose and the mail server you set. It reaches Outlevo only if you connect Cloud and run a `cloud` command.
+Everything is in `.outlevo/` next to where you run it, readable only by you: a SQLite database, your config and your secrets. What leaves it: page text and replies to your model provider, domains and addresses to Hunter if you use it, your mail to your mail server. It also visits the sites it researches (as `OutlevoCommunityBot`) and looks up DNS. It reaches Outlevo only if you connect Cloud and run a `cloud` command.
 
 ## Model
 
@@ -127,21 +129,21 @@ Community is complete on its own and stays free. [Outlevo Cloud](https://outlevo
 
 | | Community | Outlevo Cloud |
 |---|---|---|
-| Price | Free | Paid plans |
+| Price | Free, plus your own model, mailbox and contacts costs | From $29 a month ([pricing](https://outlevo.com/pricing)) |
 | Where it runs | Your machine | Hosted, always on |
 | Code | Open source, AGPLv3 | Proprietary |
 | Research, ICP, sourced emails | Yes | Yes |
-| Finding verified contacts | Your own Hunter key or list, or buy from Cloud | Included |
+| Finding verified contacts | Your own Hunter key or list | Paid in credits: 8 a researched contact |
 | Mailboxes | Your own, set up and warmed by you | Bought, set up and warmed for you |
 | Sending | When you have approved it and your machine is on | Around the clock, with autopilot |
 | Meetings | Booking link in answers you approve, meetings counted | Answered and booked on autopilot |
 | CRM, ads, agencies | No | Yes |
-| Support | GitHub Issues | Included |
+| Support | GitHub Issues | AI answers, with escalation |
 
 You can use just part of Cloud from the command line, and each paid call tells you its price first:
 
 ```bash
-outlevo cloud connect <key>
+outlevo cloud connect     # paste the key; or set OUTLEVO_KEY
 outlevo cloud find --brief "Logistics software in the US" --count 10
 outlevo cloud contacts <company-id> --titles "VP Sales,Head of Sales" --yes
 outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person launches it

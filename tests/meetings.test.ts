@@ -55,6 +55,10 @@ describe('senderProven', () => {
     expect(senderProven('mx.google.com; dmarc=pass (p=REJECT) header.from=calendly.com', 'calendly.com')).toBe(true);
     expect(senderProven('mx.google.com; dkim=pass header.d=mail.calendly.com', 'calendly.com')).toBe(true);
   });
+  it('refuses a longer domain that only starts with theirs', () => {
+    expect(senderProven('mx; dkim=pass header.d=calendly.com.evil.com', 'calendly.com')).toBe(false);
+    expect(senderProven('mx; dmarc=pass header.from=calendly.com.evil.com', 'calendly.com')).toBe(false);
+  });
   it('refuses a failure, another domain, a lookalike, or no verdict', () => {
     expect(senderProven('mx; dkim=fail header.d=calendly.com; dmarc=fail header.from=calendly.com', 'calendly.com')).toBe(false);
     expect(senderProven('mx; dkim=pass header.d=evil.example', 'calendly.com')).toBe(false);
