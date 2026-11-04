@@ -1,0 +1,41 @@
+{
+  "name": "outlevo-community",
+  "version": "0.1.0",
+  "description": "Open-source AI SDR for B2B: researches accounts, writes emails where every claim has a source, and sends only what you approve. Runs on your machine.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "outlevo": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "dev": "node --import tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
+    "imapflow": "^2.10.0",
+    "mailparser": "^3.14.1",
+    "nodemailer": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
+    "@types/smtp-server": "^3.5.13",
+    "smtp-server": "^3.21.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
