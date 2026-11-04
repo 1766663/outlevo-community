@@ -100,12 +100,26 @@ describe('writing', () => {
     const { a } = await ready();
     let tries = 0;
     const bad = { angle: 'x', emails: [{ subject: 'Hi', body: 'You grew 900% last year.', delay_days: 0, claims: [] }] };
-    (a as any).model = () => ({ json: async () => { tries++; return bad; } });
+    (a as any).model = () => ({ json: async (r: any) => { if (r.name === 'verify_email') return { unsupported: [] }; tries++; return bad; } });
     const [id] = nextToWrite(a, 5);
     expect((await writeSequence(a, id!)).status).toBe('blocked');
     expect(tries).toBe(2);
     expect(() => approve(a, id!)).toThrow(/cannot be approved/);
     expect((await sendNext(a, { checks: OK_CHECKS })).sent).toBe(false);
+  });
+  it('a statement no quote supports blocks the email, even if the rules passed it', async () => {
+    const { a } = await ready();
+    const m = a.model();
+    (a as any).model = () => ({ json: async (r: any) => (r.name === 'verify_email' ? { unsupported: [{ email: 1, statement: 'You just raised funding' }] } : m.json(r)) });
+    const [id] = nextToWrite(a, 5);
+    const r = await writeSequence(a, id!);
+    expect(r.status).toBe('blocked');
+    expect(r.issues.map((i: any) => i.rule)).toContain('unsupported-statement');
+  });
+  it('never takes your own company as a prospect', async () => {
+    const { a } = await ready();
+    expect(() => addCompany(a, 'https://www.acme-tools.com/', 'manual')).toThrow(/your own company/);
+    expect(() => addCompany(a, 'blog.getacme.com', 'manual')).toThrow(/your own company/);
   });
   it('refuses to write to a company that did not qualify', async () => {
     const { a, company } = await ready();

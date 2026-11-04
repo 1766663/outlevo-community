@@ -48,8 +48,8 @@ export function loadConfig(home = homeDir()): Config {
 }
 
 export function saveConfig(c: Config, home = homeDir()) {
-  mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'config.json'), JSON.stringify(c, null, 2) + '\n');
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, 'config.json'), JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
 }
 
 /** `sender.email` style paths; numbers and booleans are parsed so the file keeps its types. */
@@ -63,9 +63,34 @@ export function setPath(c: Config, path: string, value: string): Config {
   const last = keys.at(-1)!;
   if (!(last in known)) throw new Error(`Unknown setting: ${path}`);
   const kind = typeof known[last];
-  at[last] = Array.isArray(known[last]) ? JSON.parse(value)
-    : kind === 'number' ? Number(value) : kind === 'boolean' ? value === 'true' : value;
+  let parsed: unknown;
+  if (Array.isArray(known[last])) {
+    try { parsed = JSON.parse(value); } catch { throw new Error(`${path} must be a list, like ["a.com"] or [9,17]`); }
+    if (!Array.isArray(parsed)) throw new Error(`${path} must be a list, like ["a.com"] or [9,17]`);
+  } else if (kind === 'number') {
+    parsed = Number(value);
+    if (value.trim() === '' || !Number.isFinite(parsed)) throw new Error(`${path} must be a number`);
+  } else if (kind === 'boolean') {
+    if (value !== 'true' && value !== 'false') throw new Error(`${path} must be true or false`);
+    parsed = value === 'true';
+  } else parsed = value;
+  at[last] = parsed;
+  const wrong = settingsProblems(c);
+  if (wrong.length) throw new Error(wrong.join('; '));
   return c;
+}
+
+/** Settings a limit depends on. A bad one must never mean "no limit": sending refuses until it is fixed. */
+export function settingsProblems(c: Config): string[] {
+  const out: string[] = []; const l = c.limits;
+  const count = (v: unknown, name: string, min: number) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < min) out.push(`limits.${name} must be a number of at least ${min}`); };
+  count(l.start_per_day, 'start_per_day', 1); count(l.add_per_day, 'add_per_day', 0); count(l.max_per_day, 'max_per_day', 1); count(l.min_gap_minutes, 'min_gap_minutes', 0);
+  if (typeof l.bounce_stop_rate !== 'number' || !(l.bounce_stop_rate >= 0 && l.bounce_stop_rate <= 1)) out.push('limits.bounce_stop_rate must be between 0 and 1');
+  if (!Array.isArray(l.send_hours) || l.send_hours.length !== 2 || !l.send_hours.every((h) => Number.isInteger(h) && h >= 0 && h <= 24) || l.send_hours[0] >= l.send_hours[1]) out.push('limits.send_hours must be two hours, like [9,17]');
+  if (!Array.isArray(l.weekdays) || !l.weekdays.length || !l.weekdays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) out.push('limits.weekdays must be days from 0 (Sunday) to 6, like [1,2,3,4,5]');
+  try { new Intl.DateTimeFormat('en-US', { timeZone: l.timezone }); } catch { out.push(`limits.timezone is not a time zone: ${l.timezone}`); }
+  if (c.warmup_start !== null && (typeof c.warmup_start !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(c.warmup_start) || Number.isNaN(new Date(c.warmup_start).getTime()))) out.push('warmup_start must be a date like 2026-11-01');
+  return out;
 }
 
 // Secrets live in the environment or in a 0600 file next to the database, never in config.json.
@@ -81,7 +106,7 @@ export function loadSecrets(home = homeDir(), env = process.env): Secrets {
   };
 }
 export function saveSecret(key: keyof Secrets, value: string, home = homeDir()) {
-  mkdirSync(home, { recursive: true });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   const p = join(home, 'secrets.json');
   const file: Secrets = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
   writeFileSync(p, JSON.stringify({ ...file, [key]: value }, null, 2), { mode: 0o600 });

@@ -1,10 +1,10 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
-import { checkBounces, footer, OPT_OUT, suppress } from './compliance.js';
+import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress } from './compliance.js';
 import { all, getMeta, logEvent, one, run, setMeta } from './db.js';
 
-export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; receivedAt: Date };
+export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
 export interface Inbox { fetchNew(sinceUid: number): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number }> }
 
 const CLASSES = ['interested', 'question', 'not_now', 'wrong_person', 'unsubscribe', 'out_of_office', 'other'] as const;
@@ -24,7 +24,7 @@ export function imapInbox(a: App): Inbox {
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: p.text ?? '', autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: p.text ?? '', inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid };
@@ -45,7 +45,7 @@ export function senderProven(header: unknown, fromDomain: string): boolean {
   const first = Array.isArray(header) ? header[0] : header;
   const text = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
   const d = fromDomain.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const own = `@?(?:[a-z0-9-]+\\.)*${d}\\b`;
+  const own = `@?(?:[a-z0-9-]+\\.)*${d}(?![a-z0-9.-])`;
   return new RegExp(`\\bdmarc=pass\\b[^;]*header\\.from=${own}`, 'i').test(text)
     || new RegExp(`\\bdkim=pass\\b[^;]*header\\.[di]=${own}`, 'i').test(text);
 }
@@ -106,6 +106,25 @@ function handleBounce(a: App, m: Incoming): boolean {
   return true;
 }
 
+type Who = { id: number; first_name: string; company_id: number; email: string };
+/** Who this is from. An alias, an assistant or a forward answering our thread still counts: an opt-out must not get lost on the address it came from. */
+function whoWrote(a: App, m: Incoming): { contact: Who | undefined; direct: boolean } {
+  const q = 'select id, first_name, company_id, email from contacts where ';
+  const exact = one<Who>(a.db, `${q}email = ?`, m.from);
+  if (exact) return { contact: exact, direct: true };
+  const [local = '', domain = ''] = m.from.split('@');
+  const plus = all<Who>(a.db, `${q}email like ?`, `%@${domain}`).find((c) => c.email.split('@')[0]!.split('+')[0] === local.split('+')[0]);
+  if (plus) return { contact: plus, direct: true };
+  for (const id of [m.inReplyTo, ...(m.references ?? [])]) {
+    if (!id) continue;
+    const t = one<Who>(a.db, `select p.id, p.first_name, p.company_id, p.email from drafts d join contacts p on p.id = d.contact_id where d.message_id = ?`, id);
+    if (t) return { contact: t, direct: false };
+  }
+  // A colleague with no thread is only taken at their word when asking to stop.
+  const colleague = domain ? one<Who>(a.db, `select p.id, p.first_name, p.company_id, p.email from contacts p join drafts d on d.contact_id = p.id where d.status = 'sent' and p.email like ? order by d.sent_at desc`, `%@${domain}`) : undefined;
+  return colleague && asksToStop(m.subject, m.text) ? { contact: colleague, direct: false } : { contact: undefined, direct: false };
+}
+
 /** Reads new mail. Nothing goes out from here: an answer is only ever a suggestion waiting for you. */
 export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   const since = Number(getMeta(a.db, 'imap_last_uid') ?? 0);
@@ -114,19 +133,15 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   for (const m of messages) {
     if (handleBounce(a, m)) { handled++; continue; }
     // A person we wrote to who works at Calendly or Cal.com is a person: their reply, or their opt-out, comes first.
-    const isContact = !!one(a.db, 'select 1 from contacts where email = ?', m.from);
-    if (!isContact && handleBooking(a, m)) { handled++; continue; }
-    const contact = one<{ id: number; first_name: string; company_id: number; email: string }>(a.db, 'select id, first_name, company_id, email from contacts where email = ?', m.from);
-    if (!contact) continue;
+    const { contact } = whoWrote(a, m);
+    if (!contact && handleBooking(a, m)) { handled++; continue; }
+    if (!contact) { logEvent(a.db, a.now(), 'mail.unmatched', { from: m.from, subject: m.subject.slice(0, 200) }); continue; }
     if (one(a.db, 'select 1 from replies where message_id = ?', m.messageId)) continue;
     handled++;
-    cancelRest(a, contact.id);
-    // The rest of the company waits too: one person answering is enough for now.
-    run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved') and contact_id in (select id from contacts where company_id = ?)", contact.company_id);
 
     let cls: (typeof CLASSES)[number]; let reason: string | null = null; let suggested: string | null = null;
-    const firstLines = m.text.split(/\n>|\nOn .* wrote:/)[0] ?? m.text;
-    if (OPT_OUT.test(firstLines) || /unsubscribe/i.test(m.subject)) { cls = 'unsubscribe'; reason = 'Asked not to be written to'; }
+    const words = ownWords(m.text);
+    if (asksToStop(m.subject, m.text)) { cls = 'unsubscribe'; reason = 'Asked not to be written to'; }
     else if (m.autoSubmitted) { cls = 'out_of_office'; reason = 'An automatic reply'; }
     else {
       try {
@@ -134,14 +149,19 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
         const facts = all<{ text: string }>(a.db, 'select text from product_facts');
         const r = await a.model().json<{ class: (typeof CLASSES)[number]; reason: string; suggested_reply: string | null }>({
           name: 'classify_reply', effort: 'medium',
-          system: `You read a reply to a cold email and draft an answer for a founder to review. ${UNTRUSTED} Answer only from the facts about our product; when they do not cover a question, say the founder will come back on it. Suggest a reply for interested and question only, under 80 words, plain text; otherwise null. To someone interested, propose a short call and do not invent a time or a link: the booking link is added for you. Treat a request to stop as unsubscribe.`,
-          user: `We sell: ${product?.summary ?? ''}\nFacts:\n${facts.map((f) => `- ${f.text}`).join('\n')}\n\nReply from ${contact.first_name}:\n${untrusted(m.from, firstLines.slice(0, 6000))}`,
+          system: `You read a reply to a cold email and draft an answer for a founder to review. ${UNTRUSTED} Answer only from the facts about our product; when they do not cover a question, say the founder will come back on it. Suggest a reply for interested and question only, under 80 words, plain text; otherwise null. To someone interested, propose a short call and do not invent a time or a link: the booking link is added for you. Treat a request to stop, in any language, as unsubscribe. A person saying they are not interested counts as unsubscribe only if they want no more email.`,
+          user: `We sell: ${product?.summary ?? ''}\nFacts:\n${facts.map((f) => `- ${f.text}`).join('\n')}\n\nReply from ${contact.first_name}:\n${untrusted(m.from, (words || m.text).slice(0, 6000))}`,
           schema: obj({ class: { type: 'string', enum: [...CLASSES] }, reason: S, suggested_reply: nullable('string') }),
         });
         cls = r.class; reason = r.reason; suggested = withBookingLink(a, r.class, r.suggested_reply);
       } catch (e) { cls = 'other'; reason = `Not classified: ${(e as Error).message}`; }
     }
-    if (cls === 'unsubscribe') suppress(a, contact.email, 'asked to stop');
+    // Out of office is not an answer: the sequence carries on when its time comes. Anything else stops it, for the company too.
+    if (cls !== 'out_of_office') {
+      cancelRest(a, contact.id);
+      run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved') and contact_id in (select id from contacts where company_id = ?)", contact.company_id);
+    }
+    if (cls === 'unsubscribe') { suppress(a, contact.email, 'asked to stop'); if (m.from !== contact.email) suppress(a, m.from, 'asked to stop'); }
     run(a.db, `insert into replies (contact_id, message_id, from_addr, subject, text, class, reason, received_at, suggested, suggested_status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       contact.id, m.messageId, m.from, m.subject, m.text.slice(0, 20_000), cls, reason, m.receivedAt.toISOString(), suggested, suggested ? 'pending' : 'none');
     logEvent(a.db, a.now(), 'reply.received', { contact_id: contact.id, class: cls });
@@ -150,10 +170,21 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   return { read: messages.length, handled };
 }
 
-export function sendSuggestedReply(a: App, replyId: number) {
+/** An answer is mail too: the kill switch, suppression and the readiness checks hold. Hours and daily limits do not: they asked. */
+export async function sendSuggestedReply(a: App, replyId: number, deps: { checks?: () => Promise<Check[]> } = {}) {
   const r = one<{ id: number; from_addr: string; subject: string | null; suggested: string | null; suggested_status: string; message_id: string }>(a.db, 'select * from replies where id = ?', replyId);
   if (!r?.suggested || r.suggested_status !== 'pending') throw new Error(`Reply ${replyId} has no answer waiting`);
+  const stopped = isStopped(a);
+  if (stopped) throw new Error(`Sending is stopped: ${stopped}`);
+  const why = isSuppressed(a, r.from_addr);
+  if (why) throw new Error(`Not sent: ${r.from_addr} is suppressed (${why})`);
+  const checks = await (deps.checks ? deps.checks() : readiness(a));
+  if (!ready(checks)) throw new Error(`Not ready to send: ${checks.filter((c) => !c.ok && c.blocking).map((c) => c.name).join(', ')}. Run: outlevo doctor`);
+  if (!run(a.db, "update replies set suggested_status = 'sent' where id = ? and suggested_status = 'pending'", replyId).changes) throw new Error(`Reply ${replyId} has no answer waiting`);
   const s = a.config.sender;
-  return a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), inReplyTo: r.message_id, references: r.message_id })
-    .then(() => { run(a.db, "update replies set suggested_status = 'sent' where id = ?", replyId); logEvent(a.db, a.now(), 'reply.sent', { reply_id: replyId }); return { sent: true }; });
+  try {
+    await a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), inReplyTo: r.message_id, references: r.message_id });
+  } catch (e) { run(a.db, "update replies set suggested_status = 'pending' where id = ?", replyId); throw e; }
+  logEvent(a.db, a.now(), 'reply.sent', { reply_id: replyId });
+  return { sent: true };
 }

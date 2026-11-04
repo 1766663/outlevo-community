@@ -58,6 +58,7 @@ function reviewCard(g) {
     el('div', { class: 'row' },
       el('div', {}, el('h3', {}, `${g.name}${g.title ? `, ${g.title}` : ''}`), el('div', { class: 'small muted' }, `${g.company || g.domain} · ${g.email}`)),
       el('span', { class: `pill ${blocked ? 'bad' : g.email_source === 'verified' ? 'good' : ''}` }, blocked ? 'Failed the checks' : g.email_source === 'verified' ? 'Verified address' : g.email_source === 'published' ? 'Address from their site' : 'Address you imported')),
+    g.why?.length ? el('p', { class: 'small muted' }, `Why this company: ${g.why.join(' · ')}`) : null,
     g.angle && el('p', { class: 'small muted' }, `Angle: ${g.angle}`),
     g.emails.map((e) => el('section', { class: 'email' },
       el('div', { class: 'small muted' }, e.step === 1 ? 'First email' : `Follow-up ${e.step - 1}, after ${e.delay_days} days`),
@@ -77,7 +78,7 @@ const views = {
       el('h1', {}, 'To review'),
       el('p', { class: 'muted' }, 'Nothing goes out until you approve it. Green text is a claim about the company; its source is under the email.'),
       el('div', { class: 'stats' },
-        [['Meetings booked', s.pipeline.meetings], ['Companies waiting', s.pipeline.new], ['Qualified', s.pipeline.qualified], ['Contacts', s.pipeline.contacts], ['Approved, waiting to send', s.pipeline.approved], ['Sent today', `${s.sending.today} / ${s.sending.limit}`]]
+        [['Meetings booked', s.pipeline.meetings], ['Companies waiting', s.pipeline.new], ['Qualified', s.pipeline.qualified], ['Contacts', s.pipeline.contacts], ['Emails approved, waiting to send', s.pipeline.approved], ['Sent today', `${s.sending.today} / ${s.sending.limit}`]]
           .map(([k, v]) => el('div', { class: 'stat' }, el('b', {}, v), el('span', { class: 'small muted' }, k)))),
       s.review.length ? s.review.map(reviewCard)
         : el('div', { class: 'card' }, el('h3', {}, 'Nothing to review'), el('p', { class: 'muted' }, s.pipeline.qualified && !s.pipeline.contacts ? 'You have qualified companies but nobody to write to. Import contacts, or find verified ones with Outlevo Cloud.' : 'Add companies with outlevo companies import, then run outlevo run.')),

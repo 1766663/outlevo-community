@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { makeApp } from './app.js';
 import { CloudError, cloudContacts, cloudFind, cloudHandoff, cloudOf, cloudStatus, NeedsConfirm, SIGNUP_URL } from './cloud.js';
@@ -47,6 +48,7 @@ Emails
 Sending
   send [--dry-run]                 Send the next email that is due, if every guard allows
   replies                          Read new mail, stop sequences, draft answers
+  replies list                     What came in, and the answers waiting
   answer <reply-id>                Send a drafted answer
   meetings                         Meetings booked
   meetings add <contact-id>        Record one by hand
@@ -58,15 +60,19 @@ Running
   dashboard [--port 5757]          Local page to review and approve
   status
 Outlevo Cloud (optional, paid)
-  cloud connect <key>              Key from app.outlevo.com, Developers
+  cloud connect                    Reads the key from stdin, or set OUTLEVO_KEY. From app.outlevo.com, Developers
   cloud status
   cloud find [--brief "..."] [--like domain] [--count 10] [--yes]
   cloud contacts <company-id> [--titles "CEO,CTO"] [--yes]
   cloud handoff --name "..." [--company ID ...]
 
-Add --json for machine-readable output.`;
+Add --json for machine-readable output.
+Exit codes: 0 done, 1 failed, 2 costs Cloud credits and needs --yes, 3 needs a person at a terminal.
+run and dashboard keep running until stopped; run --once does one turn.`;
 
-const { values: flags, positionals: pos } = parseArgs({
+let parsed;
+try {
+parsed = parseArgs({
   allowPositionals: true, strict: true,
   options: {
     json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
@@ -74,7 +80,23 @@ const { values: flags, positionals: pos } = parseArgs({
     count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
   },
 });
+} catch (e) {
+  console.error(`${(e as Error).message.split('. ')[0]}. See: outlevo --help`);
+  process.exit(1);
+}
+const { values: flags, positionals: pos } = parsed;
 const num = (v: string | undefined, dflt: number) => { const n = Number(v ?? dflt); if (!Number.isInteger(n) || n <= 0) throw new Error(`Not a positive number: ${v}`); return n; };
+const idOf = (v: string | undefined, what: string) => { const n = Number(need(v, what)); if (!Number.isInteger(n) || n <= 0) throw new Error(`${what} must be a number, not ${v}. See the list with --json`); return n; };
+
+/** Approving and answering send real mail to real people, so they wait for a person at a real terminal. Scripts can be let through on purpose. */
+async function needsPerson(what: string) {
+  if (process.env.OUTLEVO_ALLOW_SCRIPTED_APPROVAL === '1') return;
+  if (!process.stdin.isTTY) { const e = new Error(`${what} needs a person. Run it in your own terminal, or use outlevo dashboard.`); (e as any).exit = 3; throw e; }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await rl.question(`${what}. Type yes to go ahead: `);
+  rl.close();
+  if (answer.trim().toLowerCase() !== 'yes') { const e = new Error('Nothing was done.'); (e as any).exit = 3; throw e; }
+}
 const need = (v: string | undefined, what: string) => { if (!v) throw new Error(`Missing ${what}. See: outlevo --help`); return v; };
 const output = (data: unknown, human?: string) => console.log(flags.json || human === undefined ? JSON.stringify(data, null, 2) : human);
 
@@ -101,7 +123,9 @@ async function main() {
     return;
   }
   if (cmd === 'cloud' && sub === 'connect') {
-    saveSecret('outlevo_key', need(arg, 'a key'));
+    // Typed on the command line it would stay in the shell history, so stdin is the usual way in.
+    const key = arg ?? (process.stdin.isTTY ? await (async () => { const rl = createInterface({ input: process.stdin, output: process.stderr }); const k = await rl.question('Outlevo key: '); rl.close(); return k; })() : readFileSync(0, 'utf8').trim());
+    saveSecret('outlevo_key', need(key.trim() || undefined, 'a key'));
     return output({ connected: true }, 'Key saved. Try: outlevo cloud status');
   }
 
@@ -115,7 +139,7 @@ async function main() {
       return;
     }
     case 'meetings': {
-      if (sub === 'add') { addMeeting(a, Number(need(arg, 'a contact id')), 'manual', null); return output({ added: true }, 'Recorded.'); }
+      if (sub === 'add') { addMeeting(a, idOf(arg, 'A contact id'), 'manual', null); return output({ added: true }, 'Recorded.'); }
       const rows = all<any>(a.db, `select m.id, m.status, m.source, m.booked_at, p.first_name, p.last_name, p.email, c.domain from meetings m join contacts p on p.id = m.contact_id join companies c on c.id = p.company_id order by m.booked_at desc`);
       return output(rows, rows.map((m) => `${m.booked_at.slice(0, 10)} ${m.status.padEnd(9)} ${m.first_name} ${m.last_name ?? ''} <${m.email}> ${m.domain}`).join('\n') || 'No meetings yet.');
     }
@@ -132,25 +156,29 @@ async function main() {
     }
     case 'companies': {
       if (sub === 'add') { const r = addCompany(a, need(arg, 'a domain'), 'manual'); return output(r, r.added ? `Added ${r.domain} (id ${r.id})` : `${r.domain} is already here (id ${r.id})`); }
-      if (sub === 'import') { const r = importCompanies(a, need(arg, 'a file')); return output(r, `Added ${r.added}. Skipped ${r.skipped.length}.`); }
+      if (sub === 'import') { const r = importCompanies(a, need(arg, 'a file')); return output(r, [`Added ${r.added}. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`)].join('\n')); }
       if (sub === 'discover') { const r = await discoverCompanies(a, num(flags.count, 10), flags.brief); return output(r, `Added: ${r.added.join(', ') || 'none'}`); }
       const rows = all(a.db, 'select id, domain, name, status, score from companies order by id');
       return output(rows, rows.map((r: any) => `${String(r.id).padStart(4)}  ${r.status.padEnd(13)} ${String(r.score ?? '').padEnd(4)} ${r.domain}`).join('\n') || 'No companies yet.');
     }
     case 'contacts': {
-      if (sub === 'import') { const r = importContacts(a, need(arg, 'a file')); return output(r, `Added ${r.added}. Skipped ${r.skipped.length}.`); }
-      if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.`); }
-      return output(all(a.db, 'select p.id, p.first_name, p.last_name, p.title, p.email, p.email_source, p.status, c.domain from contacts p join companies c on c.id = p.company_id'));
+      if (sub === 'import') {
+        const r = importContacts(a, need(arg, 'a file'));
+        return output(r, [`Added ${r.added}. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`), ...(r.new_companies.length ? [`New companies from this file, not yet researched: ${r.new_companies.join(', ')}`] : []), 'Next: outlevo research, then outlevo write'].join('\n'));
+      }
+      if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.${r.added ? ' Next: outlevo write' : ''}`); }
+      const people = all<any>(a.db, 'select p.id, p.first_name, p.last_name, p.title, p.email, p.email_source, p.status, c.domain from contacts p join companies c on c.id = p.company_id order by p.id');
+      return output(people, people.map((p) => `${String(p.id).padStart(4)}  ${p.status.padEnd(8)} ${p.email_source.padEnd(10)} ${p.first_name} ${p.last_name ?? ''} <${p.email}>${p.title ? `, ${p.title}` : ''}`).join('\n') || 'No contacts yet.');
     }
     case 'research': {
-      const ids = flags.company?.length ? flags.company.map(Number) : all<{ id: number }>(a.db, "select id from companies where status = 'new' order by id limit ?", num(flags.limit, 5)).map((r) => r.id);
+      const ids = flags.company?.length ? flags.company.map((v) => idOf(v, 'A company id')) : all<{ id: number }>(a.db, "select id from companies where status = 'new' order by id limit ?", num(flags.limit, 5)).map((r) => r.id);
       const out = [];
       for (const id of ids) { const r = await researchCompany(a, id); out.push(r); if (!flags.json) console.log(`${r.domain}: ${r.status}${'score' in r ? ` (${r.score})` : ''}`); }
       if (flags.json) output(out);
       return;
     }
     case 'write': {
-      const ids = flags.contact ? [Number(flags.contact)] : nextToWrite(a, num(flags.limit, 5));
+      const ids = flags.contact ? [idOf(flags.contact, 'A contact id')] : nextToWrite(a, num(flags.limit, 5));
       const out = [];
       for (const id of ids) { const r = await writeSequence(a, id); out.push(r); if (!flags.json) console.log(`Contact ${id}: ${r.status}${r.issues.length ? ` (${r.issues.map((i) => i.message).join('; ')})` : ''}`); }
       if (flags.json) output(out); else if (!ids.length) console.log('Nobody to write to yet: you need contacts with usable addresses at qualified companies.');
@@ -160,23 +188,47 @@ async function main() {
       const q = reviewQueue(a);
       return output(q, q.map((g) => [`#${g.contact_id} ${g.name} <${g.email}> at ${g.domain} [${g.status}]`, ...g.emails.map((e: any) => [`  ${e.step}. ${e.subject}`, ...e.body.split('\n').map((l: string) => `     ${l}`), ...e.claims.map((c: any) => `     source: "${c.source?.quote ?? '?'}" ${c.source?.source_url ?? ''}`), ...e.issues.map((i: any) => `     ${i.level}: ${i.message}`)].join('\n'))].join('\n')).join('\n\n') || 'Nothing to review.');
     }
-    case 'approve': { const r = approve(a, Number(need(sub, 'a contact id'))); return output(r, `Approved ${r.approved} emails. They send when due, if every guard allows.`); }
-    case 'reject': { const r = reject(a, Number(need(sub, 'a contact id'))); return output(r, `Rejected ${r.rejected} emails.`); }
+    case 'approve': {
+      const id = idOf(sub, 'A contact id');
+      const q = reviewQueue(a).find((g) => g.contact_id === id);
+      if (q && !flags.json) console.error(q.emails.map((e: any) => `${e.step}. ${e.subject}\n${e.body}`).join('\n\n'));
+      await needsPerson(`Approve ${q ? `${q.emails.length} emails to ${q.email}` : `the emails for contact ${id}`}`);
+      const r = approve(a, id); return output(r, `Approved ${r.approved} emails. They send when due, if every guard allows.`); }
+    case 'reject': {
+      const r = reject(a, idOf(sub, 'A contact id'));
+      if (!r.rejected) throw new Error(`Nothing waits for review for contact ${sub}`);
+      return output(r, `Rejected ${r.rejected} emails.`); }
     case 'send': { const r = await sendNext(a, { dryRun: !!flags['dry-run'] }); return output(r, r.sent ? `${flags['dry-run'] ? 'Would send' : 'Sent'}: ${r.subject} to ${r.to}` : r.reason); }
-    case 'replies': { const r = await checkReplies(a); return output(r, `Read ${r.read} messages, ${r.handled} from people you wrote to.`); }
-    case 'answer': { const r = await sendSuggestedReply(a, Number(need(sub, 'a reply id'))); return output(r, 'Sent.'); }
+    case 'replies': {
+      if (sub !== 'list') {
+        const r = await checkReplies(a);
+        if (!flags.json) console.log(`Read ${r.read} messages, ${r.handled} from people you wrote to.`);
+        else return output(r);
+      }
+      const rows = all<any>(a.db, 'select id, from_addr, class, reason, suggested, suggested_status from replies order by id desc limit 50');
+      if (sub === 'list') return output(rows, rows.map((x) => `#${x.id} ${x.class.padEnd(13)} ${x.from_addr}${x.suggested_status === 'pending' ? `  answer waiting: outlevo answer ${x.id}` : ''}`).join('\n') || 'No replies yet.');
+      const waiting = rows.filter((x) => x.suggested_status === 'pending');
+      if (waiting.length) console.log(waiting.map((x) => `Answer waiting for ${x.from_addr}: outlevo answer ${x.id}`).join('\n'));
+      return;
+    }
+    case 'answer': {
+      const id = idOf(sub, 'A reply id');
+      const w = one<{ from_addr: string; suggested: string | null }>(a.db, 'select from_addr, suggested from replies where id = ?', id);
+      if (w?.suggested && !flags.json) console.error(`To ${w.from_addr}:\n${w.suggested}`);
+      await needsPerson(`Send this answer${w ? ` to ${w.from_addr}` : ''}`);
+      const r = await sendSuggestedReply(a, id); return output(r, 'Sent.'); }
     case 'suppress': { suppress(a, need(sub, 'an email or a domain'), 'added by hand'); return output({ suppressed: sub }, `Will never write to ${sub}.`); }
     case 'stop': { stopSending(a, 'Stopped by hand'); return output({ stopped: true }, 'All sending stopped.'); }
-    case 'resume': { resumeSending(a); return output({ stopped: false }, 'Sending resumed.'); }
+    case 'resume': { await needsPerson('Resume all sending'); resumeSending(a); return output({ stopped: false }, 'Sending resumed.'); }
     case 'run': {
-      const show = (r: unknown) => console.log(`${new Date().toISOString()} ${JSON.stringify(r)}`);
+      const show = (r: unknown) => console.log(flags.json ? JSON.stringify(r) : `${new Date().toISOString()} ${JSON.stringify(r)}`);
       if (flags.once) return show(await cycle(a));
       const ctl = new AbortController();
       process.on('SIGINT', () => ctl.abort()); process.on('SIGTERM', () => ctl.abort());
-      console.log(`Running every ${a.config.loop_minutes} minutes. Ctrl-C to stop. Nothing sends without your approval.`);
+      console.error(`Running every ${a.config.loop_minutes} minutes. Ctrl-C to stop. Nothing sends without your approval.`);
       return runLoop(a, show, ctl.signal);
     }
-    case 'dashboard': { const d = await startDashboard(a, flags.port ? num(flags.port, 5757) : 5757); console.log(`Open: ${d.url}`); return; }
+    case 'dashboard': { const d = await startDashboard(a, flags.port ? num(flags.port, 5757) : 5757); console.log(flags.json ? JSON.stringify({ url: d.url }) : `Open: ${d.url}`); return; }
     case 'status': {
       const count = (sql: string) => one<{ n: number }>(a.db, sql)?.n ?? 0;
       const s = { stopped: isStopped(a), companies: count('select count(*) as n from companies'), qualified: count("select count(*) as n from companies where status = 'qualified'"), contacts: count('select count(*) as n from contacts'), meetings: count("select count(*) as n from meetings where status = 'booked'"), to_review: reviewQueue(a).length, approved: count("select count(*) as n from drafts where status = 'approved'"), sent: count("select count(*) as n from drafts where status = 'sent'"), replies: count('select count(*) as n from replies') };
@@ -186,7 +238,7 @@ async function main() {
       const c = cloudOf(a);
       if (sub === 'status') { const s = await cloudStatus(c); return output(s, `Plan ${s.plan}, ${s.status}. ${s.credits_available} credits available.`); }
       if (sub === 'find') { const r = await cloudFind(a, c, { ...(flags.brief ? { brief: flags.brief } : {}), ...(flags.like ? { like: flags.like } : {}), count: num(flags.count, 10) }, { yes: !!flags.yes }); return output(r, `Added: ${r.added.join(', ') || 'none'}`); }
-      if (sub === 'contacts') { const r = await cloudContacts(a, c, Number(need(arg, 'a company id')), { yes: !!flags.yes, ...(flags.titles ? { titles: flags.titles.split(',').map((t) => t.trim()) } : {}) }); return output(r, `Added ${r.added} verified contacts. ${r.unverified} not verified, left out.`); }
+      if (sub === 'contacts') { const r = await cloudContacts(a, c, idOf(arg, 'A company id'), { yes: !!flags.yes, ...(flags.titles ? { titles: flags.titles.split(',').map((t) => t.trim()) } : {}) }); return output(r, `Added ${r.added} verified contacts. ${r.unverified} not verified, left out.`); }
       if (sub === 'handoff') {
         const ids = flags.company?.length ? flags.company.map(Number) : all<{ id: number }>(a.db, "select id from companies where status = 'qualified' limit 50").map((r) => r.id);
         if (!ids.length) throw new Error('No qualified companies to hand over');
@@ -203,6 +255,7 @@ async function main() {
 
 main().catch((e) => {
   if (e instanceof NeedsConfirm) { console.error(e.message); process.exitCode = 2; return; }
+  if ((e as any).exit) { console.error((e as Error).message); process.exitCode = (e as any).exit; return; }
   if (e instanceof CloudError && e.status === 402) console.error(`${e.message}\nMore credits: ${SIGNUP_URL}`);
   else if (/authentication method/i.test((e as Error).message)) console.error('No model key. Set ANTHROPIC_API_KEY, or use a local Claude Code: outlevo config set model.provider claude-cli');
   else console.error((e as Error).message);

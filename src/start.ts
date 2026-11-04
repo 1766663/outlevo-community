@@ -38,6 +38,7 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
     if (!getIcp(a)) {
       say(o.won || o.lost ? 'Learning who buys from your won and lost deals…' : 'Working out who buys. Give --won and --lost CSV files for a far better answer…');
       const icp = await learnIcp(a, { ...(o.won ? { won: o.won } : {}), ...(o.lost ? { lost: o.lost } : {}), ...(o.brief ? { brief: o.brief } : {}) });
+      if (o.won || o.lost) say(`  Read ${icp.deals_read.won} won and ${icp.deals_read.lost} lost companies.`);
       say(`  ${icp.summary}\n  Buyers: ${icp.buyer_titles.join(', ')}`);
     }
     const have = one<{ n: number }>(a.db, 'select count(*) as n from companies')?.n ?? 0;
@@ -76,10 +77,10 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
   const next: string[] = [];
   if (stoppedEarly) next.push(`${stoppedEarly}. Run this again tomorrow, or raise model.max_calls_per_day, and it carries on from here.`);
   if (noPerson) next.push(`${noPerson} qualified companies have nobody to write to. Set HUNTER_API_KEY and run outlevo contacts find, import a CSV with outlevo contacts import, or use outlevo cloud contacts.`);
-  if (toReview) next.push(`Review ${toReview} ${toReview === 1 ? 'sequence' : 'sequences'}: outlevo dashboard`);
+  if (toReview) next.push(`Review ${toReview} ${toReview === 1 ? 'sequence' : 'sequences'}: outlevo review, or outlevo dashboard for a page in your browser`);
   if (!ready(checks)) next.push(`Before anything can send, fix: ${missing.join(', ')}. See outlevo doctor.`);
   if (!a.config.booking_url.trim()) next.push('Add your calendar so an interested reply can book a meeting: outlevo config set booking_url https://cal.com/you');
   next.push('Then keep it running: outlevo run');
   say(`\n${stoppedEarly ? 'Stopped early' : 'Done'}. ${qualified} qualified, ${toReview} ready for review. Nothing was sent.\n\nNext:\n${next.map((n) => `  - ${n}`).join('\n')}`);
-  return { qualified, no_person: noPerson, to_review: toReview, ready_to_send: ready(checks), stopped_early: stoppedEarly, next };
+  return { qualified, no_person: noPerson, to_review: toReview, ready_to_send: ready(checks), missing, review_ids: reviewQueue(a).map((g) => g.contact_id), stopped_early: stoppedEarly, next };
 }
