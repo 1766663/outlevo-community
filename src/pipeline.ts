@@ -117,30 +117,51 @@ export function importCompanies(a: App, path: string) {
 }
 
 /** Web search through the model. Every company it names is still read and checked before anything is written. */
+/** How many companies from each industry are still in play: a search only tops up the ones behind. */
+const liveIn = (a: App, segment: string) => one<{ n: number }>(a.db, "select count(*) as n from company_segments s join companies c on c.id = s.company_id where s.segment = ? and c.status in ('new', 'qualified')", segment)?.n ?? 0;
+
 export async function discoverCompanies(a: App, count: number, brief?: string) {
   const icp = getIcp(a);
   if (!icp) throw new Error('Define your ICP first: outlevo icp learn');
   const m = a.model();
   if (!m.searchJson) throw new Error('This model provider has no web search. Import a CSV (outlevo companies import) or use outlevo cloud find.');
-  // As many as were asked for: search in rounds until there are enough or a round finds nothing new.
-  const added: string[] = [];
-  while (added.length < count) {
-    const want = Math.min(count - added.length, 25);
-    const r = await m.searchJson<{ companies: Array<{ name: string; domain: string; why: string }> }>({
+  const searchJson = m.searchJson.bind(m);
+  const summary = one<{ summary: string }>(a.db, 'select summary from product')?.summary ?? '';
+  // Asked to spread out, a search still piles into whichever industry it finds first, so each gets its own search and its own share.
+  const segments = [...new Set(icp.industries.map((s) => s.trim()).filter(Boolean))];
+  const open = segments.length ? segments : ['any of the ICP\'s industries'];
+  const added: string[] = []; const bySegment: Record<string, number> = {};
+  // As many as were asked for: search in rounds until there are enough or no industry finds anything new.
+  while (added.length < count && open.length) {
+    const left = count - added.length;
+    const share = Math.ceil((open.reduce((n, s) => n + liveIn(a, s), 0) + left) / open.length);
+    const wants = open.map((segment) => ({ segment, want: Math.min(Math.max(share - liveIn(a, segment), 0), 25) })).filter((w) => w.want > 0);
+    const known = [normalizeDomain(a.config.website), ...all<{ domain: string }>(a.db, 'select domain from companies order by id desc limit 500').map((c) => c.domain)].filter(Boolean).join(', ');
+    const found = await Promise.allSettled(wants.map((w) => searchJson<{ companies: Array<{ name: string; domain: string; why: string }> }>({
       name: 'discover_companies', maxSearches: 5, effort: 'medium',
-      system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article. ${BUYER_RULE} So search by what the ICP's companies sell and who they are, not by the words of the product below, and spread across its industries and markets.`,
-      user: `We sell: ${one<{ summary: string }>(a.db, 'select summary from product')?.summary ?? ''}\n\nFind ${want} companies for this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${[normalizeDomain(a.config.website), ...all<{ domain: string }>(a.db, 'select domain from companies order by id desc limit 500').map((c) => c.domain)].filter(Boolean).join(', ')}.`,
+      system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article. ${BUYER_RULE} So search by what the ICP's companies sell and who they are, not by the words of the product below. Every company must be in the industry you are asked for, and vary the kind of business and the market within it.`,
+      user: `We sell: ${summary}\n\nFind ${w.want} companies in this industry: ${w.segment}\nFor this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${known}.`,
       schema: obj({ companies: arr(obj({ name: S, domain: S, why: S })) }),
+    })));
+    found.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return;
+      const { segment, want } = wants[i]!; let got = 0;
+      for (const c of r.value.companies) {
+        if (got >= want || added.length >= count) break;
+        try {
+          const x = addCompany(a, c.domain, 'discover', c.name);
+          if (x.added) { run(a.db, 'insert or ignore into company_segments (company_id, segment) values (?, ?)', x.id, segment); added.push(x.domain); got++; }
+        } catch { /* your own company, or the model named something that is no domain */ }
+      }
+      bySegment[segment] = (bySegment[segment] ?? 0) + got;
+      if (!got && added.length < count) open.splice(open.indexOf(segment), 1);
     });
-    const before = added.length;
-    for (const c of r.companies) {
-      if (added.length >= count) break;
-      try { const x = addCompany(a, c.domain, 'discover', c.name); if (x.added) added.push(x.domain); } catch { /* your own company, or the model named something that is no domain */ }
-    }
-    if (added.length === before) break;
+    // What was found is saved. A refused key or a spent budget still has to reach whoever called.
+    const failed = found.find((r) => r.status === 'rejected');
+    if (failed) throw failed.reason;
   }
-  logEvent(a.db, a.now(), 'companies.discovered', { added: added.length });
-  return { added };
+  logEvent(a.db, a.now(), 'companies.discovered', { added: added.length, by_segment: bySegment });
+  return { added, by_segment: bySegment };
 }
 
 type Extract = {
@@ -252,7 +273,7 @@ async function compose(a: App, r: Recipient) {
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one short line from their side, not a list of features, asks one easy question. No meeting request. Follow-ups: under 60 words, each opens on a different fact about this company where one fits, and says what that means for them, not a list of features, prices or terms. The last one closes the loop politely. Do not call anything news or recent unless its fact has a date within six months of today, ${iso(a).slice(0, 10)}.
-Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
+Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. Never state how buyers, markets or people like them behave, think or feel: you cannot source that, so ask it as a question or leave it out. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
     user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}${f.published_at ? `\n  Dated: ${f.published_at}` : ''}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
@@ -260,7 +281,7 @@ Only state what the quotes say: a fact's summary can go further than its quote, 
   const reread = async (emails: Array<{ n: number; subject: string; body: string }>) => {
     const v = await a.model().json<{ unsupported: Array<{ email: number; statement: string }> }>({
       name: 'verify_email', effort: 'medium',
-      system: `You check cold emails against quotes from a company's own website. ${UNTRUSTED} List every statement about the recipient or their company that the quotes do not plainly support, including anything hinted at. A question, or a statement about the sender, is not one. If all is supported, the list is empty.`,
+      system: `You check cold emails against quotes from a company's own website. ${UNTRUSTED} List every statement about the recipient or their company that the quotes do not plainly support, including anything hinted at. Also list every general claim, stated as fact, about how their buyers, their market or people like them behave, think or feel. A question, or a statement about the sender, is not one. If all is supported, the list is empty.`,
       user: `Quotes:\n${untrusted(r.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${emails.map((e) => `Email ${e.n}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
       schema: obj({ unsupported: arr(obj({ email: { type: 'integer' }, statement: S })) }),
     });
