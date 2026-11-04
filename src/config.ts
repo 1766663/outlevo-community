@@ -26,9 +26,9 @@ export const DEFAULTS: Config = {
   limits: { start_per_day: 5, add_per_day: 3, max_per_day: 30, min_gap_minutes: 4, send_hours: [9, 17], weekdays: [1, 2, 3, 4, 5], timezone: 'America/New_York', bounce_stop_rate: 0.03 },
   warmup_start: null,
   do_not_contact: [],
-  model: { provider: 'anthropic', name: 'claude-opus-5-5', max_calls_per_day: 200 },
+  model: { provider: 'anthropic', name: 'claude-opus-5-5', max_calls_per_day: 0 }, // 0: no limit. Your key, your call
   booking_url: '',
-  contacts: { max_lookups_per_day: 25 },
+  contacts: { max_lookups_per_day: 0 }, // 0: no limit
   loop_minutes: 5,
   cloud_url: 'https://api.outlevo.com',
 };

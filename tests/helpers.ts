@@ -23,7 +23,7 @@ export function testApp(opts: { pages?: Record<string, Page>; answers?: Record<s
       return (typeof ans === 'function' ? ans(r) : ans) as T;
     },
   };
-  const mailer: Mailer = { send: async (m) => { sent.push(m); return { messageId: `<m${sent.length}@test>` }; } };
+  const mailer: Mailer = { send: async (m) => { sent.push(m); return { messageId: `<m${sent.length}@test>` }; }, verify: async () => true };
   return {
     db: openPath(join(home, 'test.db')), home, sent, calls, clock, now: () => clock.now, secrets: {},
     config: { ...structuredClone(DEFAULTS), website: 'https://acme-tools.com', sender: { name: 'Sam Lee', company: 'Acme Tools', email: 'sam@getacme.com', postal_address: '1 Main St, Springfield, IL 62701' }, ...opts.config },

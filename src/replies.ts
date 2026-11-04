@@ -24,7 +24,7 @@ export function imapInbox(a: App): Inbox {
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: p.text ?? '', inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: [p.text ?? '', ...p.attachments.filter((x) => /delivery-status|rfc822-headers/i.test(x.contentType)).map((x) => x.content.toString('utf8'))].join('\n'), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid };

@@ -81,7 +81,7 @@ const views = {
         [['Meetings booked', s.pipeline.meetings], ['Companies waiting', s.pipeline.new], ['Qualified', s.pipeline.qualified], ['Contacts', s.pipeline.contacts], ['Emails approved, waiting to send', s.pipeline.approved], ['Sent today', `${s.sending.today} / ${s.sending.limit}`]]
           .map(([k, v]) => el('div', { class: 'stat' }, el('b', {}, v), el('span', { class: 'small muted' }, k)))),
       s.review.length ? s.review.map(reviewCard)
-        : el('div', { class: 'card' }, el('h3', {}, 'Nothing to review'), el('p', { class: 'muted' }, s.pipeline.qualified && !s.pipeline.contacts ? 'You have qualified companies but nobody to write to. Import contacts, or find verified ones with Outlevo Cloud.' : 'Add companies with outlevo companies import, then run outlevo run.')),
+        : el('div', { class: 'card' }, el('h3', {}, 'Nothing to review'), el('p', { class: 'muted' }, s.pipeline.qualified && !s.pipeline.contacts ? 'You have qualified companies but nobody to write to. Import contacts, or find verified ones with Outlevo Cloud.' : 'Nothing is waiting for you. New emails appear here as outlevo run writes them.')),
     ];
   },
   replies() {

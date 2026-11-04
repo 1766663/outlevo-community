@@ -14,6 +14,7 @@ import { cycle, runLoop } from './loop.js';
 import { addCompany, approve, discoverCompanies, getIcp, importCompanies, importContacts, learnIcp, learnProduct, nextToWrite, reject, researchCompany, reviewQueue, writeSequence } from './pipeline.js';
 import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
+import { buildPack } from './pack.js';
 import { prepareSite, start } from './start.js';
 
 const HELP = `outlevo: an open-source AI SDR for B2B. Runs on your machine.
@@ -24,8 +25,10 @@ Setup
   config show
   doctor                           What must be fixed before anything can send
 Start here
-  start <your-site> [--count 10] [--won a.csv] [--lost b.csv] [--brief "..."]
-                                   From your website to emails waiting for review
+  start <your-site> [--count N] [--won a.csv] [--lost b.csv] [--brief "..."] [--out sales-pack]
+                                   Your sales pack: who to sell to, companies, emails. Sends nothing
+                                   --count is how many companies to reach, as many as you like (20 if not given)
+  pack [--out sales-pack]          Build the pack again from what is here
   start <another-site> --relearn   Switch this folder to another product
 Know your market
   product learn [URL]              Read your website
@@ -77,7 +80,7 @@ parsed = parseArgs({
   options: {
     json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
     website: { type: 'string' }, won: { type: 'string' }, lost: { type: 'string' }, brief: { type: 'string' }, like: { type: 'string' }, titles: { type: 'string' }, name: { type: 'string' },
-    count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
+    count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, out: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
   },
 });
 } catch (e) {
@@ -134,10 +137,11 @@ async function main() {
     case 'start': {
       prepareSite(a, need(sub ?? a.config.website, 'your website: outlevo start https://yourcompany.com'), !!flags.relearn);
       saveConfig(a.config, a.home);
-      const r = await start(a, { count: num(flags.count, 10), ...(flags.won ? { won: flags.won } : {}), ...(flags.lost ? { lost: flags.lost } : {}), ...(flags.brief ? { brief: flags.brief } : {}) }, flags.json ? () => {} : (l) => console.log(l));
+      const r = await start(a, { count: num(flags.count, 20), ...(flags.out ? { out: flags.out } : {}), ...(flags.won ? { won: flags.won } : {}), ...(flags.lost ? { lost: flags.lost } : {}), ...(flags.brief ? { brief: flags.brief } : {}) }, flags.json ? () => {} : (l) => console.log(l));
       if (flags.json) output(r);
       return;
     }
+    case 'pack': { const r = buildPack(a, flags.out); return output(r, `${r.companies} companies in ${r.index}${r.blocked ? `. ${r.blocked} left out: their emails failed the checks` : ''}`); }
     case 'meetings': {
       if (sub === 'add') { addMeeting(a, idOf(arg, 'A contact id'), 'manual', null); return output({ added: true }, 'Recorded.'); }
       const rows = all<any>(a.db, `select m.id, m.status, m.source, m.booked_at, p.first_name, p.last_name, p.email, c.domain from meetings m join contacts p on p.id = m.contact_id join companies c on c.id = p.company_id order by m.booked_at desc`);
@@ -145,6 +149,11 @@ async function main() {
     }
     case 'doctor': {
       const checks = await readiness(a);
+      // The one check that talks to your mail server, so it runs here and not before every send.
+      if (a.config.smtp.host && a.secrets.smtp_password) {
+        const login = await a.mailer().verify().then(() => null, (e: Error) => e.message);
+        checks.push({ name: 'Mailbox login', ok: !login, blocking: true, detail: `Your mail server refused it: ${login}. Check smtp.host, smtp.port, smtp.secure, smtp.user and OUTLEVO_SMTP_PASSWORD` });
+      }
       output(checks, checks.map((c) => `${c.ok ? 'ok    ' : c.blocking ? 'NEEDED' : 'advice'} ${c.name}${c.ok ? '' : `: ${c.detail}`}`).join('\n') + `\n\n${ready(checks) ? 'Ready to send.' : 'Sending stays off until everything NEEDED is fixed.'}`);
       if (!ready(checks)) process.exitCode = 1;
       return;
@@ -164,7 +173,7 @@ async function main() {
     case 'contacts': {
       if (sub === 'import') {
         const r = importContacts(a, need(arg, 'a file'));
-        return output(r, [`Added ${r.added}. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`), ...(r.new_companies.length ? [`New companies from this file, not yet researched: ${r.new_companies.join(', ')}`] : []), 'Next: outlevo research, then outlevo write'].join('\n'));
+        return output(r, [`Added ${r.added}. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`), ...(r.new_companies.length ? [`New companies from this file, not yet researched: ${r.new_companies.join(', ')}`, 'Next: outlevo research, then outlevo write'] : r.added ? ['Next: outlevo write'] : [])].join('\n'));
       }
       if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.${r.added ? ' Next: outlevo write' : ''}`); }
       const people = all<any>(a.db, 'select p.id, p.first_name, p.last_name, p.title, p.email, p.email_source, p.status, c.domain from contacts p join companies c on c.id = p.company_id order by p.id');
@@ -186,7 +195,7 @@ async function main() {
     }
     case 'review': {
       const q = reviewQueue(a);
-      return output(q, q.map((g) => [`#${g.contact_id} ${g.name} <${g.email}> at ${g.domain} [${g.status}]`, ...g.emails.map((e: any) => [`  ${e.step}. ${e.subject}`, ...e.body.split('\n').map((l: string) => `     ${l}`), ...e.claims.map((c: any) => `     source: "${c.source?.quote ?? '?'}" ${c.source?.source_url ?? ''}`), ...e.issues.map((i: any) => `     ${i.level}: ${i.message}`)].join('\n'))].join('\n')).join('\n\n') || 'Nothing to review.');
+      return output(q, q.map((g) => [`#${g.contact_id} ${g.name} <${g.email}> at ${g.domain} [${g.status}]`, ...(g.why.length ? [`  Why this company: ${g.why.join('; ')}`] : []), ...g.emails.map((e: any) => [`  ${e.step}. ${e.subject}`, ...e.body.split('\n').map((l: string) => `     ${l}`), ...e.claims.map((c: any) => `     source: "${c.source?.quote ?? '?'}" ${c.source?.source_url ?? ''}`), ...e.issues.map((i: any) => `     ${i.level}: ${i.message}`)].join('\n'))].join('\n')).join('\n\n') || 'Nothing to review.');
     }
     case 'approve': {
       const id = idOf(sub, 'A contact id');

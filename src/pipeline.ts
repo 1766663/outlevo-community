@@ -3,7 +3,7 @@ import { type App, arr, nullable, obj, S, UNTRUSTED, untrusted } from './app.js'
 import { normalizeDomain, parseCsv } from './csv.js';
 import { all, logEvent, one, run } from './db.js';
 import { type Page, quoteIsOn } from './fetcher.js';
-import { type Claim, hasErrors, type KnownFact, lintEmail } from './lint.js';
+import { type Claim, hasErrors, type KnownFact, lintEmail, type LintIssue } from './lint.js';
 
 const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000;
 const iso = (a: App) => a.now().toISOString();
@@ -45,13 +45,30 @@ export async function learnProduct(a: App, url = a.config.website) {
 export type Icp = { summary: string; industries: string[]; company_size: string; markets: string[]; buyer_titles: string[]; must_have: string[]; rule_out: string[]; learned_from: string };
 const ICP_SCHEMA = obj({ summary: S, industries: arr(S), company_size: S, markets: arr(S), buyer_titles: arr(S), must_have: arr(S), rule_out: arr(S), learned_from: S });
 
-const domainsOf = (path?: string) => (path ? parseCsv(readFileSync(path, 'utf8')).map((r) => normalizeDomain(r.domain ?? r.website ?? r.company_domain ?? '')).filter((d): d is string => !!d) : []);
+const FREE_MAIL = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com', 'aol.com', 'icloud.com', 'proton.me', 'protonmail.com', 'gmx.com', 'mail.com']);
+/** The deals worth reading from a file, and what was left out of it and why. */
+function dealsIn(a: App, path?: string) {
+  const domains = new Set<string>(); const skipped: Array<{ row: string; reason: string }> = [];
+  (path ? parseCsv(readFileSync(path, 'utf8')) : []).forEach((r, i) => {
+    const raw = r.domain ?? r.website ?? r.company_domain ?? ''; const d = normalizeDomain(raw);
+    const label = raw.slice(0, 80) || `row ${i + 2}`;
+    if (!d) skipped.push({ row: label, reason: 'not a domain' });
+    else if (FREE_MAIL.has(d)) skipped.push({ row: label, reason: 'a personal email service, not a company' });
+    else if (isOwnDomain(a, d)) skipped.push({ row: label, reason: 'your own company' });
+    else if (domains.has(d)) skipped.push({ row: label, reason: 'listed twice' });
+    else domains.add(d);
+  });
+  return { domains: [...domains], skipped };
+}
 
 /** From the website alone, or, far better, from the companies you actually won and lost. */
 export async function learnIcp(a: App, opts: { won?: string; lost?: string; brief?: string }) {
   const product = one<{ summary: string }>(a.db, 'select summary from product');
   if (!product) throw new Error('Read your product first: outlevo product learn');
-  const won = domainsOf(opts.won).slice(0, 15); const lost = domainsOf(opts.lost).slice(0, 15);
+  const wonIn = dealsIn(a, opts.won); const lostIn = dealsIn(a, opts.lost);
+  const won = wonIn.domains.slice(0, 15); const lost = lostIn.domains.slice(0, 15);
+  const beyond = (d: string[]) => d.slice(15).map((x) => ({ row: x, reason: 'only the first 15 are read' }));
+  const skipped = [...wonIn.skipped, ...lostIn.skipped, ...beyond(wonIn.domains), ...beyond(lostIn.domains)];
   const read = async (domains: string[], label: string) => {
     const pages = await Promise.all(domains.map(async (d) => [d, (await readSite(a, d, 1))[0]] as const));
     return pages.filter(([, p]) => p).map(([d, p]) => untrusted(`${label}: ${d}`, p!.text.slice(0, 3000))).join('\n');
@@ -64,7 +81,7 @@ export async function learnIcp(a: App, opts: { won?: string; lost?: string; brie
   });
   run(a.db, 'insert into icp (id, body, source, updated_at) values (1, ?, ?, ?) on conflict (id) do update set body = excluded.body, source = excluded.source, updated_at = excluded.updated_at', JSON.stringify(icp), won.length || lost.length ? 'deals' : 'website', iso(a));
   logEvent(a.db, a.now(), 'icp.learned', { won: won.length, lost: lost.length });
-  return { ...icp, deals_read: { won: won.length, lost: lost.length } };
+  return { ...icp, deals_read: { won, lost, skipped } };
 }
 export const getIcp = (a: App) => { const r = one<{ body: string }>(a.db, 'select body from icp'); return r ? (JSON.parse(r.body) as Icp) : null; };
 
@@ -102,16 +119,22 @@ export async function discoverCompanies(a: App, count: number, brief?: string) {
   if (!icp) throw new Error('Define your ICP first: outlevo icp learn');
   const m = a.model();
   if (!m.searchJson) throw new Error('This model provider has no web search. Import a CSV (outlevo companies import) or use outlevo cloud find.');
-  const r = await m.searchJson<{ companies: Array<{ name: string; domain: string; why: string }> }>({
-    name: 'discover_companies', maxSearches: 5, effort: 'medium',
-    system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article.`,
-    user: `Find ${count} companies for this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${all<{ domain: string }>(a.db, 'select domain from companies limit 500').map((c) => c.domain).join(', ') || 'nothing'}.`,
-    schema: obj({ companies: arr(obj({ name: S, domain: S, why: S })) }),
-  });
+  // As many as were asked for: search in rounds until there are enough or a round finds nothing new.
   const added: string[] = [];
-  for (const c of r.companies) {
-    if (added.length >= count) break;
-    try { const x = addCompany(a, c.domain, 'discover', c.name); if (x.added) added.push(x.domain); } catch { /* your own company, or the model named something that is no domain */ }
+  while (added.length < count) {
+    const want = Math.min(count - added.length, 25);
+    const r = await m.searchJson<{ companies: Array<{ name: string; domain: string; why: string }> }>({
+      name: 'discover_companies', maxSearches: 5, effort: 'medium',
+      system: `You find real companies that fit a brief. ${UNTRUSTED} List only companies you saw on the web, with their own website's domain, never a directory or a list article.`,
+      user: `Find ${want} companies for this ICP:\n${JSON.stringify(icp)}\n${brief ? `Also: ${brief}\n` : ''}Leave out: ${[normalizeDomain(a.config.website), ...all<{ domain: string }>(a.db, 'select domain from companies order by id desc limit 500').map((c) => c.domain)].filter(Boolean).join(', ')}.`,
+      schema: obj({ companies: arr(obj({ name: S, domain: S, why: S })) }),
+    });
+    const before = added.length;
+    for (const c of r.companies) {
+      if (added.length >= count) break;
+      try { const x = addCompany(a, c.domain, 'discover', c.name); if (x.added) added.push(x.domain); } catch { /* your own company, or the model named something that is no domain */ }
+    }
+    if (added.length === before) break;
   }
   logEvent(a.db, a.now(), 'companies.discovered', { added: added.length });
   return { added };
@@ -141,6 +164,7 @@ export async function researchCompany(a: App, companyId: number) {
   });
   const pageOf = (url: string) => pages.find((p) => p.url === url);
   const facts = x.facts.filter((f) => { const p = pageOf(f.source_url); return p && quoteIsOn(f.quote, p.text); });
+  run(a.db, 'delete from company_emails where company_id = ?', c.id);
   run(a.db, 'delete from facts where company_id = ?', c.id);
   const known: KnownFact[] = facts.map((f) => {
     const r = run(a.db, 'insert into facts (company_id, kind, text, quote, source_url, published_at, fetched_at) values (?, ?, ?, ?, ?, ?, ?)', c.id, f.kind, f.text, f.quote, f.source_url, f.published_at, iso(a));
@@ -185,7 +209,7 @@ export function importContacts(a: App, path: string) {
   for (const row of parseCsv(readFileSync(path, 'utf8'))) {
     const email = (row.email ?? row.email_address ?? '').trim(); const domain = row.domain ?? row.website ?? row.company_domain ?? email.split('@')[1] ?? '';
     const first = row.first_name ?? row.firstname ?? (row.name ?? '').split(' ')[0] ?? '';
-    const label = (email || JSON.stringify(row)).slice(0, 80);
+    const label = (email || [first, row.last_name ?? row.lastname, row.company ?? domain].filter(Boolean).join(' ') || 'a blank row').slice(0, 80);
     if (!email) { skipped.push({ row: label, reason: 'no email' }); continue; }
     if (!EMAIL.test(email)) { skipped.push({ row: label, reason: 'not a single valid email address' }); continue; }
     if (PERSONAL.test(email)) { skipped.push({ row: label, reason: 'a personal address, not a work one' }); continue; }
@@ -209,38 +233,35 @@ function lintSequence(a: App, seq: Written, facts: KnownFact[], domain: string) 
   return seq.emails.map((e, i) => lintEmail({ subject: e.subject, body: e.body, step: i + 1, claims: e.claims, facts, productFacts, allowedLinkDomains: [own, domain].filter(Boolean) }));
 }
 
-/** Three emails for one person. Rejected by the rules, it gets one more try; then it is kept as blocked, with the reasons, and cannot be approved. */
-export async function writeSequence(a: App, contactId: number) {
-  const row = one<{ id: number; first_name: string; last_name: string | null; title: string | null; company_id: number; domain: string; name: string | null; status: string }>(a.db,
-    `select p.id, p.first_name, p.last_name, p.title, c.id as company_id, c.domain, c.name, c.status from contacts p join companies c on c.id = p.company_id where p.id = ?`, contactId);
-  if (!row) throw new Error(`No contact ${contactId}`);
-  if (row.status !== 'qualified') throw new Error(`${row.domain} is ${row.status}; only qualified companies get emails`);
+type Recipient = { domain: string; company: string | null; company_id: number; to: string };
+
+/** Three emails, by a model, then the rules, then a second reading. Refused, it gets one more try. Returned with its reasons either way. */
+async function compose(a: App, r: Recipient) {
   const product = one<{ summary: string }>(a.db, 'select summary from product');
   const productFacts = all<{ text: string; quote: string }>(a.db, 'select text, quote from product_facts');
-  const facts = all<KnownFact & { kind: string; source_url: string }>(a.db, 'select id, kind, text, quote, source_url from facts where company_id = ?', row.company_id);
+  const facts = all<KnownFact & { kind: string; source_url: string }>(a.db, 'select id, kind, text, quote, source_url from facts where company_id = ?', r.company_id);
   if (!product || !facts.length) throw new Error('Nothing to write from: read the product and research the company first');
 
   const ask = (feedback: string) => a.model().json<Written>({
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one line, asks one easy question. No meeting request. Follow-ups: under 60 words, each adds something new, the last one closes the loop politely.
-Only state what the facts say. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting formula, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
-    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name}, ${a.config.sender.company}\n\nTo: ${row.first_name} ${row.last_name ?? ''}, ${row.title ?? 'job unknown'}, at ${row.name ?? row.domain}\nFacts about them:\n${untrusted(row.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${feedback}`,
+Only state what the facts say. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
+    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
-
   // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.
   const reread = async (seq: Written) => {
-    const r = await a.model().json<{ unsupported: Array<{ email: number; statement: string }> }>({
+    const v = await a.model().json<{ unsupported: Array<{ email: number; statement: string }> }>({
       name: 'verify_email', effort: 'medium',
       system: `You check cold emails against quotes from a company's own website. ${UNTRUSTED} List every statement about the recipient or their company that the quotes do not plainly support, including anything hinted at. A question, or a statement about the sender, is not one. If all is supported, the list is empty.`,
-      user: `Quotes:\n${untrusted(row.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${seq.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
+      user: `Quotes:\n${untrusted(r.domain, facts.map((f) => `- ${f.quote}`).join('\n'))}\n\nEmails:\n${seq.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}`,
       schema: obj({ unsupported: arr(obj({ email: { type: 'integer' }, statement: S })) }),
     });
-    return r.unsupported ?? [];
+    return v.unsupported ?? [];
   };
   const checked = async (seq: Written) => {
-    const out = lintSequence(a, seq, facts, row.domain);
+    const out = lintSequence(a, seq, facts, r.domain);
     if (out.some(hasErrors)) return out;
     for (const u of await reread(seq)) (out[Math.max(0, u.email - 1)] ??= []).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
     return out;
@@ -251,17 +272,61 @@ Only state what the facts say. Each statement about the prospect is a claim: cop
     seq = await ask(`\n\nYour last try was refused:\n${list}\nFix every one of these.`);
     issues = await checked(seq);
   }
-  const emails = seq.emails.slice(0, 3); const blocked = issues.slice(0, 3).some(hasErrors);
+  return { seq, emails: seq.emails.slice(0, 3), issues, blocked: issues.slice(0, 3).some(hasErrors) };
+}
+const delayOf = (i: number, days: number) => Math.max(i === 0 ? 0 : 2, days);
+
+/** Emails for a company with nobody to address yet: the pack is whole without a contact, and an address is only needed to send. */
+export async function writeForCompany(a: App, companyId: number) {
+  const c = one<{ id: number; domain: string; name: string | null; status: string }>(a.db, 'select id, domain, name, status from companies where id = ?', companyId);
+  if (!c) throw new Error(`No company ${companyId}`);
+  if (c.status !== 'qualified') throw new Error(`${c.domain} is ${c.status}; only qualified companies get emails`);
+  const title = getIcp(a)?.buyer_titles[0] ?? 'the person who owns this problem';
+  const w = await compose(a, { domain: c.domain, company: c.name, company_id: c.id, to: title });
+  a.db.exec('begin');
+  try {
+    run(a.db, 'delete from company_emails where company_id = ?', c.id);
+    w.emails.forEach((e, i) => run(a.db, 'insert into company_emails (company_id, step, subject, body, claims, angle, delay_days, lint, blocked, to_title, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      c.id, i + 1, e.subject, e.body, JSON.stringify(e.claims), w.seq.angle, delayOf(i, e.delay_days), JSON.stringify(w.issues[i] ?? []), w.blocked ? 1 : 0, title, iso(a)));
+    a.db.exec('commit');
+  } catch (e) { a.db.exec('rollback'); throw e; }
+  logEvent(a.db, a.now(), 'company.written', { company_id: c.id, blocked: w.blocked });
+  return { company_id: c.id, domain: c.domain, status: w.blocked ? 'blocked' : 'ready', issues: w.issues.flat().filter((x) => x.level === 'error') };
+}
+
+/** Three emails for one person, waiting for review. Rejected by the checks, they are kept as blocked, with the reasons, and cannot be approved. */
+export async function writeSequence(a: App, contactId: number) {
+  const row = one<{ id: number; first_name: string; last_name: string | null; title: string | null; company_id: number; domain: string; name: string | null; status: string }>(a.db,
+    `select p.id, p.first_name, p.last_name, p.title, c.id as company_id, c.domain, c.name, c.status from contacts p join companies c on c.id = p.company_id where p.id = ?`, contactId);
+  if (!row) throw new Error(`No contact ${contactId}`);
+  if (row.status !== 'qualified') throw new Error(`${row.domain} is ${row.status}; only qualified companies get emails`);
+
+  // Emails already written for this company carry no name, so they fit whoever turns up: no second bill.
+  const ready = all<{ step: number; subject: string; body: string; claims: string; angle: string | null; delay_days: number; lint: string }>(a.db, 'select step, subject, body, claims, angle, delay_days, lint from company_emails where company_id = ? and blocked = 0 order by step', row.company_id);
+  let rows: Array<{ step: number; subject: string; body: string; claims: string; angle: string | null; delay_days: number; lint: string }>; let blocked = false; let errors: LintIssue[] = [];
+  if (ready.length) rows = ready;
+  else {
+    const w = await compose(a, { domain: row.domain, company: row.name, company_id: row.company_id, to: `${row.first_name} ${row.last_name ?? ''}, ${row.title ?? 'job unknown'}` });
+    rows = w.emails.map((e, i) => ({ step: i + 1, subject: e.subject, body: e.body, claims: JSON.stringify(e.claims), angle: w.seq.angle, delay_days: delayOf(i, e.delay_days), lint: JSON.stringify(w.issues[i] ?? []) }));
+    blocked = w.blocked; errors = w.issues.flat().filter((x) => x.level === 'error');
+  }
   a.db.exec('begin');
   try {
     run(a.db, "delete from drafts where contact_id = ? and status in ('pending','blocked','rejected')", contactId);
-    emails.forEach((e, i) => run(a.db, `insert into drafts (contact_id, step, subject, body, claims, angle, delay_days, lint, status, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      contactId, i + 1, e.subject, e.body, JSON.stringify(e.claims), seq.angle, Math.max(i === 0 ? 0 : 2, e.delay_days), JSON.stringify(issues[i] ?? []), blocked ? 'blocked' : 'pending', iso(a)));
+    for (const e of rows) run(a.db, `insert into drafts (contact_id, step, subject, body, claims, angle, delay_days, lint, status, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      contactId, e.step, e.subject, e.body, e.claims, e.angle, e.delay_days, e.lint, blocked ? 'blocked' : 'pending', iso(a));
     a.db.exec('commit');
   } catch (e) { a.db.exec('rollback'); throw e; }
-  logEvent(a.db, a.now(), 'sequence.written', { contact_id: contactId, blocked });
-  return { contact_id: contactId, status: blocked ? 'blocked' : 'pending', issues: issues.flat().filter((x) => x.level === 'error') };
+  logEvent(a.db, a.now(), 'sequence.written', { contact_id: contactId, blocked, reused: ready.length > 0 });
+  return { contact_id: contactId, status: blocked ? 'blocked' : 'pending', issues: errors };
 }
+
+/** Qualified companies with no emails yet and nobody to write to. */
+export const companiesToWrite = (a: App, limit: number) => all<{ id: number }>(a.db, `select c.id from companies c where c.status = 'qualified'
+  and not exists (select 1 from company_emails e where e.company_id = c.id)
+  and not exists (select 1 from drafts d join contacts p on p.id = d.contact_id where p.company_id = c.id)
+  and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))
+  order by coalesce(c.score, 0) desc limit ?`, limit).map((r) => r.id);
 
 const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 1 && !['of', 'the', 'and', 'for'].includes(w)));
 /** How close a job title is to the buyers in the ICP: the share of a buyer title's words it contains. */
