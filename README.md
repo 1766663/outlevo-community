@@ -66,6 +66,13 @@ Then open `sales-pack/index.html`. Run it again any time: it carries on from whe
 
 **As many companies as you want.** It starts with 20 if you do not say; `--count 500` goes for 500, and everything in your own list gets done whatever its size. It is your key and your bill: expect about 4 model calls a company, more when an email needs a second try. To cap it, `outlevo config set model.max_calls_per_day 200`. Only sending has a ceiling, and that protects your domain, not our costs.
 
+Not quite right? Change it in words, or take a company out. The pack updates, and rewritten emails go through every check again:
+
+```bash
+outlevo rewrite northwind.com "shorter, and no question at the end"
+outlevo drop northwind.com
+```
+
 To make it better, add what you have:
 
 ```bash

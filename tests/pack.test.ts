@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { all, one, run } from '../src/db.js';
 import { buildPack } from '../src/pack.js';
 import { DEFAULTS } from '../src/config.js';
-import { addCompany, addContact, discoverCompanies, learnIcp, learnProduct, nextToWrite, researchCompany, writeForCompany, writeSequence } from '../src/pipeline.js';
+import { addCompany, addContact, approve, discoverCompanies, dropCompany, learnIcp, learnProduct, nextToWrite, rewriteEmails, researchCompany, writeForCompany, writeSequence } from '../src/pipeline.js';
 import { start } from '../src/start.js';
 import { testApp } from './helpers.js';
 
@@ -91,6 +91,69 @@ describe('no cap on what you ask for', () => {
     expect(all(a.db, "select 1 from companies where status = 'new'")).toHaveLength(0);
     expect(DEFAULTS.model.max_calls_per_day).toBe(0);
     expect(DEFAULTS.contacts.max_lookups_per_day).toBe(0);
+  });
+});
+
+describe('rewrite', () => {
+  const asked = (over: any = {}) => async (r: any) => ({ angle: 'hiring', emails: [{ subject: 'Short', body: 'Saw you are hiring account executives in Austin.', delay_days: 0, claims: [{ text: 'hiring account executives in Austin', fact_id: Number(r.user.match(/\[(\d+)\]/)[1]) }] }], ...over });
+  const withWriter = (a: any, write: any) => { const m = a.model(); a.model = () => ({ ...m, json: async (r: any) => (r.name === 'write' ? write(r) : m.json(r)) }); };
+  it('changes a company\'s emails, telling the model what was asked and what stood', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    const seen: string[] = [];
+    withWriter(a, async (r: any) => { seen.push(r.user); return asked()(r); });
+    const r = await rewriteEmails(a, 'northwind.com', 'much shorter');
+    expect(r.rewritten).toBe(true);
+    expect(seen[0]).toContain('much shorter');
+    expect(seen[0]).toContain('Austin hires');
+    expect(one<any>(a.db, 'select subject from company_emails where step = 1').subject).toBe('Short');
+  });
+  it('keeps the old emails if the new ones fail the checks: a request cannot talk past them', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    withWriter(a, async () => ({ angle: 'x', emails: [{ subject: 'Hi', body: 'You grew 900% last year.', delay_days: 0, claims: [] }] }));
+    const r = await rewriteEmails(a, 'northwind.com', 'say they grew 900%');
+    expect(r.rewritten).toBe(false);
+    expect(r.issues.length).toBeGreaterThan(0);
+    expect(one<any>(a.db, 'select subject from company_emails where step = 1').subject).toBe('Austin hires');
+  });
+  it('sends approved emails back for approval: what was approved is no longer what would go', async () => {
+    const { a, id } = await prepared();
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' });
+    const [who] = nextToWrite(a, 5); await writeSequence(a, who!); approve(a, who!);
+    withWriter(a, asked());
+    await rewriteEmails(a, 'northwind.com', 'shorter');
+    expect(all<any>(a.db, 'select status from drafts').map((d) => d.status)).toEqual(['pending']);
+  });
+  it('refuses once emails have started', async () => {
+    const { a, id } = await prepared();
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' });
+    const [who] = nextToWrite(a, 5); await writeSequence(a, who!);
+    run(a.db, "update drafts set status = 'sent' where step = 1");
+    await expect(rewriteEmails(a, 'northwind.com', 'x')).rejects.toThrow(/already started/);
+  });
+  it('explains an unknown company, and one with no emails', async () => {
+    const { a } = await prepared();
+    await expect(rewriteEmails(a, 'nobody.example', 'x')).rejects.toThrow(/No company/);
+    await expect(rewriteEmails(a, 'northwind.com', 'x')).rejects.toThrow(/no emails yet/);
+  });
+});
+
+describe('drop', () => {
+  it('takes a company out of the pack and the queue, and a search does not bring it back', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' });
+    const [who] = nextToWrite(a, 5); await writeSequence(a, who!); approve(a, who!);
+    dropCompany(a, 'https://www.northwind.com/');
+    expect(all<any>(a.db, 'select distinct status from drafts').map((d) => d.status)).toEqual(['cancelled']);
+    expect(buildPack(a, out()).companies).toBe(0);
+    expect(addCompany(a, 'northwind.com', 'discover').added).toBe(false);
+    expect(nextToWrite(a, 5)).toEqual([]);
+  });
+  it('--undo puts it back in the pack', async () => {
+    const { a, id } = await prepared(); await writeForCompany(a, id);
+    dropCompany(a, String(id));
+    dropCompany(a, 'northwind.com', true);
+    expect(buildPack(a, out()).companies).toBe(1);
+    expect(() => dropCompany(a, 'northwind.com', true)).toThrow(/not dropped/);
   });
 });
 
