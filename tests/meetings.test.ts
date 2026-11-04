@@ -156,6 +156,13 @@ describe('meetings', () => {
     await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 2, messageId: '<b@x>', ...booking({ subject: 'New Event: x', text: 'dana@northwind.com' }), receivedAt: TUESDAY_NOON }], lastUid: 2 }) });
     expect(one<any>(a.db, 'select suggested_status from replies').suggested_status).toBe('dismissed');
   });
+  it('a reply from someone we wrote to at cal.com is a reply, and their opt-out counts', async () => {
+    const a = testApp(); person(a, 'dana@cal.com');
+    await checkReplies(a, inbox([{ from: 'dana@cal.com', authenticated: true, subject: 'Re: invitation', text: 'Please unsubscribe me.' }]));
+    expect(one<any>(a.db, 'select class from replies').class).toBe('unsubscribe');
+    expect(one<any>(a.db, 'select value from suppression').value).toBe('dana@cal.com');
+    expect(all(a.db, 'select 1 from meetings')).toHaveLength(0);
+  });
   it('can be recorded by hand', () => {
     const a = testApp(); const p = person(a);
     addMeeting(a, p.id, 'manual', null);
