@@ -13,7 +13,7 @@ import { cycle, runLoop } from './loop.js';
 import { addCompany, approve, discoverCompanies, getIcp, importCompanies, importContacts, learnIcp, learnProduct, nextToWrite, reject, researchCompany, reviewQueue, writeSequence } from './pipeline.js';
 import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
-import { start } from './start.js';
+import { prepareSite, start } from './start.js';
 
 const HELP = `outlevo: an open-source AI SDR for B2B. Runs on your machine.
 
@@ -25,6 +25,7 @@ Setup
 Start here
   start <your-site> [--count 10] [--won a.csv] [--lost b.csv] [--brief "..."]
                                    From your website to emails waiting for review
+  start <another-site> --relearn   Switch this folder to another product
 Know your market
   product learn [URL]              Read your website
   icp learn [--won a.csv] [--lost b.csv] [--brief "..."]
@@ -68,7 +69,7 @@ Add --json for machine-readable output.`;
 const { values: flags, positionals: pos } = parseArgs({
   allowPositionals: true, strict: true,
   options: {
-    json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+    json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
     website: { type: 'string' }, won: { type: 'string' }, lost: { type: 'string' }, brief: { type: 'string' }, like: { type: 'string' }, titles: { type: 'string' }, name: { type: 'string' },
     count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
   },
@@ -104,14 +105,11 @@ async function main() {
     return output({ connected: true }, 'Key saved. Try: outlevo cloud status');
   }
 
-  if (cmd === 'start') {
-    const c = loadConfig();
-    c.website = need(sub ?? c.website, 'your website: outlevo start https://yourcompany.com');
-    saveConfig(c);
-  }
   const a = makeApp();
   switch (cmd) {
     case 'start': {
+      prepareSite(a, need(sub ?? a.config.website, 'your website: outlevo start https://yourcompany.com'), !!flags.relearn);
+      saveConfig(a.config, a.home);
       const r = await start(a, { count: num(flags.count, 10), ...(flags.won ? { won: flags.won } : {}), ...(flags.lost ? { lost: flags.lost } : {}), ...(flags.brief ? { brief: flags.brief } : {}) }, flags.json ? () => {} : (l) => console.log(l));
       if (flags.json) output(r);
       return;

@@ -32,22 +32,26 @@ export async function findContacts(a: App, opts: { limit: number; doFetch?: type
     and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))
     and not exists (select 1 from events e where e.kind = 'contacts.searched' and e.data = json_object('company_id', c.id))
     order by coalesce(c.score, 0) desc limit ?`, opts.limit);
-  let added = 0; let notVerified = 0; let looked = 0;
+  let added = 0; let notVerified = 0; let looked = 0; let outOfLookups = false;
   for (const c of companies) {
     if (!spend()) break;
     looked++;
     const found = await hunter<{ data?: { emails?: HunterEmail[] } }>('/domain-search', { domain: c.domain, type: 'personal', limit: '10' }, key, doFetch);
-    logEvent(a.db, a.now(), 'contacts.searched', { company_id: c.id });
     const people = (found.data?.emails ?? []).filter((e) => e.value && e.first_name)
       .sort((x, y) => titleFit(y.position ?? null, buyers) - titleFit(x.position ?? null, buyers) || (y.confidence ?? 0) - (x.confidence ?? 0)).slice(0, 3);
     for (const p of people) {
-      if (!spend()) break;
+      if (!spend()) { outOfLookups = true; break; }
       const v = await hunter<{ data?: { status?: string } }>('/email-verifier', { email: p.value! }, key, doFetch);
       if (v.data?.status !== 'valid') { notVerified++; continue; }
       if (addContact(a, { company_id: c.id, first_name: p.first_name!, last_name: p.last_name ?? null, title: p.position ?? null, email: p.value!, email_source: 'verified' })) added++;
       break; // one good address a company is enough, and each check costs a credit
     }
+    // Marked only once it is really done: a company cut short by the day's limit gets its turn again tomorrow.
+    if (outOfLookups) break;
+    logEvent(a.db, a.now(), 'contacts.searched', { company_id: c.id });
   }
   logEvent(a.db, a.now(), 'contacts.found', { companies: looked, added, not_verified: notVerified });
-  return { companies: looked, added, not_verified: notVerified, waiting: Math.max(0, (one<{ n: number }>(a.db, "select count(*) as n from companies where status = 'qualified'")?.n ?? 0) - added) };
+  const waiting = one<{ n: number }>(a.db, `select count(*) as n from companies c where c.status = 'qualified'
+    and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))`)?.n ?? 0;
+  return { companies: looked, added, not_verified: notVerified, waiting };
 }
