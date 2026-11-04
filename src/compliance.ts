@@ -75,6 +75,8 @@ export async function readiness(a: App, dns: Dns = realDns): Promise<Check[]> {
   add('Sending address', !!domain, true, 'sender.email');
   add('Mailbox', !!c.smtp.host && !!c.smtp.user && !!a.secrets.smtp_password, true, 'smtp.host, smtp.user and OUTLEVO_SMTP_PASSWORD');
   add('Replies can be read', !!c.imap.host && !!c.imap.user && !!a.secrets.imap_password, true, 'Opt-outs arrive as replies, so sending needs imap.host and imap.user');
+  add('Booking link', !!c.booking_url.trim(), false, 'booking_url, your Calendly or Cal.com link, so an interested reply can book a meeting');
+  add('A source of contacts', !!a.secrets.hunter_key || !!a.secrets.outlevo_key, false, 'HUNTER_API_KEY or outlevo cloud connect. Without one you can only write to people you import or addresses printed on their sites');
   add('Model', c.model.provider !== 'anthropic' || !!process.env.ANTHROPIC_API_KEY || !!process.env.ANTHROPIC_AUTH_TOKEN, false, 'ANTHROPIC_API_KEY, to research and write');
   if (domain) {
     const txt = async (n: string) => (await dns.txt(n).catch(() => [] as string[][])).map((r) => r.join(''));

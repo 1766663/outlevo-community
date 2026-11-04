@@ -1,8 +1,14 @@
 # Outlevo Community
 
-**An open-source AI SDR for B2B. It runs on your machine, and every claim in every email has a source you can check.**
+**The open-source AI SDR for B2B. An alternative to 11x, Artisan and Apollo's outreach, from your website to a meeting in your calendar. It runs on your machine, and every claim in every email has a source you can check.**
 
-The open alternative to closed AI SDRs like 11x and Artisan. You can read every rule it follows, see every email before it goes, and change anything.
+The software is free. You connect your own mailbox and your own source of contacts, the way you bring your own auditor to an open-source compliance tool. If you would rather have all of it ready to go, that is [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme).
+
+```bash
+outlevo start https://yourcompany.com
+```
+
+That reads your site, works out who buys, finds companies that fit, researches them, finds the right person, writes the emails and stops for your review. It sends nothing.
 
 ```
 $ outlevo review
@@ -20,6 +26,7 @@ An illustration with a made-up company. Nothing goes out until you run `outlevo 
 - **Claims are checked by code, not trusted.** A fact is kept only if its quote is really on the page it names. A number in an email must appear in a fact that email cites. If an email breaks a rule, the model gets one more try. After that the email is blocked and cannot be approved.
 - **It learns from your deals.** Give it the companies you won and lost, and the ICP comes from what they show, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
+- **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
 - **Nothing sends without you.** Every sequence waits for your approval. The answers it drafts to replies wait too. Community has no autopilot.
 - **Safe by default.** See [The rules it will not break](#the-rules-it-will-not-break).
 
@@ -33,16 +40,13 @@ npm install && npm run build && npm link
 
 mkdir my-outbound && cd my-outbound
 export ANTHROPIC_API_KEY=...
+export HUNTER_API_KEY=...     # optional: finds and verifies people with your Hunter account
 
-outlevo init --website https://yourcompany.com
-outlevo product learn
-outlevo icp learn --won won.csv --lost lost.csv   # both optional, a column named domain
-outlevo companies import companies.csv            # a column named domain
-outlevo contacts import people.csv                # email, first_name, last_name, title, domain
-outlevo run --once                                # research
-outlevo run --once                                # write
-outlevo dashboard                                 # review and approve
+outlevo start https://yourcompany.com --won won.csv --lost lost.csv   # the CSVs are optional, a column named domain
+outlevo dashboard                                                     # review and approve
 ```
+
+No Hunter account? Import your own list with `outlevo contacts import people.csv` (email, first_name, last_name, title, domain). Addresses printed on a company's own site are picked up too.
 
 Try the rules on any email, with no key and no network:
 
@@ -50,7 +54,9 @@ Try the rules on any email, with no key and no network:
 outlevo check email.txt
 ```
 
-Before anything can send, connect a mailbox and pass the checks:
+## From approved email to meeting
+
+Connect a mailbox on a separate domain and pass the checks:
 
 ```bash
 outlevo config set sender.name "Sam Lee"
@@ -62,13 +68,24 @@ outlevo config set smtp.user sam@getacme.com
 outlevo config set imap.host imap.example.com
 outlevo config set imap.user sam@getacme.com
 outlevo config set warmup_start 2026-11-01
+outlevo config set booking_url https://cal.com/sam
 export OUTLEVO_SMTP_PASSWORD=...
 
 outlevo doctor     # what is missing: SPF, DMARC, address, mailbox
-outlevo run        # replies, send, write, research, every 5 minutes
+outlevo run        # replies, send, contacts, write, research, every 5 minutes
 ```
 
+A new mailbox needs 2-4 weeks of warm-up before real volume, with a warm-up service of your choice. So expect the first meetings some weeks after you start, and no number of them is promised.
+
 `outlevo --help` lists every command, and `--json` makes any of them easy for scripts and agents. To let an AI coding agent drive it, see [skills/outlevo/SKILL.md](skills/outlevo/SKILL.md).
+
+## What it replaces
+
+| | What Community does instead | What you still bring |
+|---|---|---|
+| 11x, Artisan | Research, emails, replies, the path to a meeting, with your approval at each send | Mailbox, contacts |
+| Apollo | Sequences and AI writing | Contacts: there is no built-in database |
+| Clay | AI research on company sites, with a quote for every answer | Other data providers |
 
 ## The rules it will not break
 
@@ -110,9 +127,10 @@ Community is complete on its own and stays free. [Outlevo Cloud](https://outlevo
 | Where it runs | Your machine | Hosted, always on |
 | Code | Open source, AGPLv3 | Proprietary |
 | Research, ICP, sourced emails | Yes | Yes |
-| Finding verified contacts | Bring your own, or buy from Cloud | Included |
+| Finding verified contacts | Your own Hunter key or list, or buy from Cloud | Included |
 | Mailboxes | Your own, set up and warmed by you | Bought, set up and warmed for you |
 | Sending | When you have approved it and your machine is on | Around the clock, with autopilot |
+| Meetings | Booking link in answers you approve, meetings counted | Answered and booked on autopilot |
 | CRM, ads, agencies | No | Yes |
 | Support | GitHub Issues | Included |
 

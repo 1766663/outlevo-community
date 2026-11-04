@@ -1,11 +1,12 @@
 import type { App } from './app.js';
+import { findContacts } from './contacts.js';
 import { all } from './db.js';
 import { BudgetExhausted } from './model.js';
 import { nextToWrite, researchCompany, writeSequence } from './pipeline.js';
 import { checkReplies } from './replies.js';
 import { sendNext } from './send.js';
 
-export type CycleReport = { replies?: unknown; send?: unknown; wrote?: number; researched?: number; errors: string[] };
+export type CycleReport = { replies?: unknown; send?: unknown; wrote?: number; contacts?: number; researched?: number; errors: string[] };
 
 /** One turn, in order of what matters most. Rules choose what to do; the model is called only when there is work for it. */
 export async function cycle(a: App, deps: { replies?: () => Promise<unknown>; send?: () => Promise<unknown> } = {}): Promise<CycleReport> {
@@ -18,6 +19,8 @@ export async function cycle(a: App, deps: { replies?: () => Promise<unknown>; se
   };
   if (a.config.imap.host) await attempt('replies', async () => { r.replies = await (deps.replies ? deps.replies() : checkReplies(a)); });
   await attempt('send', async () => { r.send = await (deps.send ? deps.send() : sendNext(a)); });
+  r.contacts = 0;
+  if (a.secrets.hunter_key) await attempt('contacts', async () => { r.contacts = (await findContacts(a, { limit: 3 })).added; });
   r.wrote = 0;
   await attempt('write', async () => { for (const id of nextToWrite(a, 3)) { await writeSequence(a, id); r.wrote!++; } });
   r.researched = 0;

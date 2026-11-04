@@ -13,7 +13,7 @@ const safeUrl = (u) => { try { const x = new URL(u); return x.protocol === 'http
 const extLink = (u, label) => (safeUrl(u) ? el('a', { href: safeUrl(u), target: '_blank', rel: 'noopener noreferrer' }, label ?? u) : (label ?? u));
 const when = (s) => (s ? new Date(s).toLocaleString() : '');
 
-const TABS = [['review', 'To review'], ['replies', 'Replies'], ['companies', 'Companies'], ['activity', 'Activity'], ['setup', 'Setup']];
+const TABS = [['review', 'To review'], ['replies', 'Replies'], ['meetings', 'Meetings'], ['companies', 'Companies'], ['activity', 'Activity'], ['setup', 'Setup']];
 let tab = 'review'; let state = null; let doctor = null; let busy = false;
 
 const toast = (msg) => { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); setTimeout(() => t.classList.remove('on'), 3500); };
@@ -77,7 +77,7 @@ const views = {
       el('h1', {}, 'To review'),
       el('p', { class: 'muted' }, 'Nothing goes out until you approve it. Green text is a claim about the company; its source is under the email.'),
       el('div', { class: 'stats' },
-        [['Companies waiting', s.pipeline.new], ['Qualified', s.pipeline.qualified], ['Contacts', s.pipeline.contacts], ['Approved, waiting to send', s.pipeline.approved], ['Sent today', `${s.sending.today} / ${s.sending.limit}`]]
+        [['Meetings booked', s.pipeline.meetings], ['Companies waiting', s.pipeline.new], ['Qualified', s.pipeline.qualified], ['Contacts', s.pipeline.contacts], ['Approved, waiting to send', s.pipeline.approved], ['Sent today', `${s.sending.today} / ${s.sending.limit}`]]
           .map(([k, v]) => el('div', { class: 'stat' }, el('b', {}, v), el('span', { class: 'small muted' }, k)))),
       s.review.length ? s.review.map(reviewCard)
         : el('div', { class: 'card' }, el('h3', {}, 'Nothing to review'), el('p', { class: 'muted' }, s.pipeline.qualified && !s.pipeline.contacts ? 'You have qualified companies but nobody to write to. Import contacts, or find verified ones with Outlevo Cloud.' : 'Add companies with outlevo companies import, then run outlevo run.')),
@@ -95,6 +95,16 @@ const views = {
       r.suggested_status === 'pending' && el('div', { class: 'actions' },
         button('Send this answer', 'go', 'Sending…', async () => { await post('/api/reply/send', { id: r.id }); return 'Sent'; }),
         button('Dismiss', '', 'Dismissing…', async () => { await post('/api/reply/dismiss', { id: r.id }); return null; }))))];
+  },
+  meetings() {
+    if (!state.meetings.length) return [el('h1', {}, 'Meetings'), el('div', { class: 'card' }, el('p', { class: 'muted' }, 'No meetings yet. They appear here when Calendly, Cal.com or Google Calendar emails you a booking with someone you wrote to.'))];
+    return [el('h1', {}, 'Meetings'), el('div', { class: 'card table-wrap' }, el('table', {},
+      el('thead', {}, el('tr', {}, ['Who', 'Company', 'Booked', 'Status'].map((h) => el('th', { scope: 'col' }, h)))),
+      el('tbody', {}, state.meetings.map((m) => el('tr', {},
+        el('td', {}, `${m.first_name} ${m.last_name ?? ''}`, m.job && el('div', { class: 'small muted' }, m.job)),
+        el('td', {}, m.company || m.domain),
+        el('td', { class: 'small muted' }, when(m.booked_at)),
+        el('td', {}, el('span', { class: `pill ${m.status === 'booked' ? 'good' : ''}` }, m.status)))))))];
   },
   companies() {
     const pill = { qualified: 'good', disqualified: '', error: 'bad', new: 'warn' };

@@ -9,13 +9,11 @@ Drive the `outlevo` CLI in the folder that holds `.outlevo/`. Add `--json` to re
 
 ## Order of work
 
-1. `outlevo status`, then `outlevo doctor`. If there is no `.outlevo/`, run `outlevo init --website <url>`.
-2. `outlevo product learn`, then `outlevo icp learn`, with `--won` and `--lost` CSV files if the person has them. Ask for them: real deals give a far better ICP.
-3. Add companies: `outlevo companies import <csv>`, `outlevo companies add <domain>` or `outlevo companies discover --count 10`.
-4. `outlevo research --limit 5`.
-5. Add people: `outlevo contacts import <csv>`, or `outlevo cloud contacts <id>` if Cloud is connected.
-6. `outlevo write --limit 5`.
-7. `outlevo review`, and show the person each email with its sources.
+1. `outlevo start <website>`. It does everything up to review and says what to do next. Ask for `--won` and `--lost` CSV files if the person has them: real deals give a far better ICP. It is safe to run again.
+2. If it says companies have nobody to write to: `outlevo contacts find` with `HUNTER_API_KEY`, `outlevo contacts import <csv>`, or `outlevo cloud contacts <id>`.
+3. `outlevo review`, and show the person each email with its sources.
+4. `outlevo doctor`, for what stands between them and sending. Help them set up the mailbox and `booking_url`.
+5. `outlevo run`, once they have approved something. `outlevo meetings` shows what got booked.
 
 ## Rules for you
 
