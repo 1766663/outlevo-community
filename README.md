@@ -41,7 +41,7 @@ their first accounts. Who owns ramp for them?
 
 ## What makes it different
 
-- **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number in an email must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets one more try, and after that it is blocked and cannot be approved.
+- **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number in an email must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
 - **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
 - **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
@@ -132,7 +132,7 @@ These are in the code, and each has a test.
 
 | Rule | How |
 |---|---|
-| Approved emails only | A send picks only what a person approved, and checks it again at that moment. `approve` and `answer` need a person at a terminal, or the dashboard |
+| Approved emails only | A send picks only what a person approved, and checks it again at that moment. `approve`, `answer` and `resume` need a person at a terminal, or a dashboard started from one |
 | Unsourced claims do not go out | The checks in [`src/lint.ts`](src/lint.ts) run when written and again when sent |
 | No fake threads or fake history | No "Re:" on a first email, no "as we discussed" |
 | Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
@@ -142,7 +142,7 @@ These are in the code, and each has a test.
 | It stops itself | Sending stops when over 3% of the last 200 people bounced, once there are 20 people or 3 bounces to go on. `outlevo stop` stops everything at any time, answers included |
 | It needs your domain set up | No SPF, DMARC or postal address, no sending |
 
-It also respects `robots.txt`, will not fetch private network addresses, treats everything from the web and every reply as data rather than instructions, and gives the model no tools when it reads them.
+It also respects `robots.txt`, will not fetch private network addresses, treats everything from the web and every reply as data rather than instructions, and gives the model no tools when it reads them, with one exception. Finding companies uses the model's web search, so a page in the results could try to steer it. That step gets your product summary, the ICP and your `--brief`, but not your imported lists or the names of your deals, and all it returns is domains, each read and checked like any other. To avoid it, use your own list with `outlevo companies import` and `outlevo research`.
 
 These rules protect you from mistakes, and from a coding agent ignoring its instructions, but not from someone determined on your own machine: it is open source, and `OUTLEVO_ALLOW_SCRIPTED_APPROVAL=1` exists for people who want their own automation.
 

@@ -1,18 +1,19 @@
 import type { App } from './app.js';
-import { type Check, checkBounces, dailyLimit, footer, inSendingHours, isStopped, isSuppressed, readiness, ready, sentToday } from './compliance.js';
+import { type Check, checkBounces, dailyLimit, footer, inSendingHours, isStopped, isSuppressed, readiness, ready, sentToday, unsubscribeHeader } from './compliance.js';
 import { all, logEvent, one, run } from './db.js';
 import { hasErrors, lintEmail } from './lint.js';
+import { linkDomains } from './pipeline.js';
 
 export type SendResult = { sent: false; reason: string } | { sent: true; to: string; subject: string; step: number };
 
-type Due = { id: number; contact_id: number; step: number; subject: string; body: string; claims: string; email: string; company_id: number; message_id_prev: string | null };
+type Due = { id: number; contact_id: number; step: number; subject: string; body: string; claims: string; email: string; company_id: number; domain: string; message_id_prev: string | null };
 
 /** The next approved email whose turn has come. Anyone who replied, bounced or opted out has already had theirs cancelled. */
 export function nextDue(a: App): Due | null {
   const rows = all<Due & { delay_days: number; prev_status: string | null; prev_sent: string | null }>(a.db, `
-    select d.id, d.contact_id, d.step, d.subject, d.body, d.claims, d.delay_days, p.email, p.company_id,
+    select d.id, d.contact_id, d.step, d.subject, d.body, d.claims, d.delay_days, p.email, p.company_id, c.domain,
       prev.status as prev_status, prev.sent_at as prev_sent, prev.message_id as message_id_prev
-    from drafts d join contacts p on p.id = d.contact_id
+    from drafts d join contacts p on p.id = d.contact_id join companies c on c.id = p.company_id
     left join drafts prev on prev.contact_id = d.contact_id and prev.step = d.step - 1
     where d.status = 'approved' and p.status = 'active' order by d.step desc, d.approved_at, d.id`);
   for (const r of rows) {
@@ -32,18 +33,26 @@ export async function sendNext(a: App, opts: { dryRun?: boolean; checks?: () => 
   const stopped = isStopped(a);
   if (stopped) return no(`Sending is stopped: ${stopped}`);
   if (checkBounces(a)) return no(isStopped(a)!);
+  const waiting = (): string | null => {
+    if (!inSendingHours(a.config, a.now())) return 'Outside sending hours';
+    const limit = dailyLimit(a.config, a.now());
+    if (sentToday(a) >= limit) return `Today's limit of ${limit} is reached`;
+    const last = one<{ at: string | null }>(a.db, "select max(sent_at) as at from drafts where status = 'sent'")?.at;
+    if (last && a.now().getTime() - new Date(last).getTime() < a.config.limits.min_gap_minutes * 60_000) return 'Waiting between emails';
+    return null;
+  };
+  // The cheap answers first: a night of empty turns makes no DNS lookups. They are asked again below, where they count.
+  const wait = waiting() ?? (nextDue(a) ? null : 'Nothing is due');
+  if (wait) return no(wait);
   const checks = await (opts.checks ? opts.checks() : readiness(a));
   if (!ready(checks)) return no(`Not ready to send: ${checks.filter((c) => !c.ok && c.blocking).map((c) => c.name).join(', ')}. Run: outlevo doctor`);
-  if (!inSendingHours(a.config, a.now())) return no('Outside sending hours');
 
   // Two runs at once must not both see room for one more. The email is claimed as sent inside one write transaction,
   // before the network: if the send fails it goes back, and if the machine dies it counts as sent, never as twice.
   const claim = (): SendResult | Due => {
     if (isStopped(a)) return no(`Sending is stopped: ${isStopped(a)}`);
-    const limit = dailyLimit(a.config, a.now());
-    if (sentToday(a) >= limit) return no(`Today's limit of ${limit} is reached`);
-    const last = one<{ at: string | null }>(a.db, "select max(sent_at) as at from drafts where status = 'sent'")?.at;
-    if (last && a.now().getTime() - new Date(last).getTime() < a.config.limits.min_gap_minutes * 60_000) return no('Waiting between emails');
+    const held = waiting();
+    if (held) return no(held);
     const d = nextDue(a);
     if (!d) return no('Nothing is due');
     const why = !validAddress(d.email) ? 'not a single valid address' : isSuppressed(a, d.email);
@@ -54,7 +63,7 @@ export async function sendNext(a: App, opts: { dryRun?: boolean; checks?: () => 
     }
     // Facts may have changed, and a hand edit in the database must not get past the rules.
     const facts = all<any>(a.db, 'select f.id, f.text, f.quote from facts f join contacts p on p.company_id = f.company_id where p.id = ?', d.contact_id);
-    const issues = lintEmail({ subject: d.subject, body: d.body, step: d.step, claims: JSON.parse(d.claims), facts, productFacts: all<any>(a.db, 'select text, quote from product_facts') });
+    const issues = lintEmail({ subject: d.subject, body: d.body, step: d.step, claims: JSON.parse(d.claims), facts, productFacts: all<any>(a.db, 'select text, quote from product_facts'), allowedLinkDomains: linkDomains(a, d.domain) });
     if (hasErrors(issues)) {
       run(a.db, "update drafts set status = 'blocked', lint = ? where id = ?", JSON.stringify(issues), d.id);
       return no(`Blocked email ${d.id}: it no longer passes the checks`);
@@ -75,7 +84,7 @@ export async function sendNext(a: App, opts: { dryRun?: boolean; checks?: () => 
   try {
     res = await a.mailer().send({
       from: `${s.name} <${s.email}>`, to: d.email, subject, text: d.body + footer(a.config),
-      headers: { 'List-Unsubscribe': `<mailto:${s.email}?subject=unsubscribe>` },
+      headers: unsubscribeHeader(a.config),
       ...(d.message_id_prev ? { inReplyTo: d.message_id_prev, references: d.message_id_prev } : {}),
     });
   } catch (e) {

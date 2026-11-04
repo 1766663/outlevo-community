@@ -111,6 +111,8 @@ export function footer(c: Config): string {
   return `\n\n--\n${c.sender.name}, ${c.sender.company}\n${c.sender.postal_address}\nNot for you? Reply "stop" and I won't write again.`;
 }
 
+export const unsubscribeHeader = (c: Config) => ({ 'List-Unsubscribe': `<mailto:${c.sender.email}?subject=unsubscribe>` });
+
 export type Check = { name: string; ok: boolean; blocking: boolean; detail: string };
 type Dns = { txt: (name: string) => Promise<string[][]>; mx: (name: string) => Promise<unknown[]> };
 const realDns: Dns = { txt: resolveTxt, mx: resolveMx };

@@ -62,7 +62,7 @@ Sending
 Running
   run                              Loop: replies, send, write, research
   run --once
-  dashboard [--port 5757]          Local page to review and approve
+  dashboard [--port 5757]          Local page to review and approve. Without a terminal it only shows and stops
   status
 Outlevo Cloud (optional, paid)
   cloud connect                    Reads the key from stdin, or set OUTLEVO_KEY. From app.outlevo.com, Developers
@@ -96,12 +96,14 @@ const idOf = (v: string | undefined, what: string) => { const n = Number(need(v,
 /** Approving and answering send real mail to real people, so they wait for a person at a real terminal. Scripts can be let through on purpose. */
 async function needsPerson(what: string) {
   if (process.env.OUTLEVO_ALLOW_SCRIPTED_APPROVAL === '1') return;
-  if (!process.stdin.isTTY) { const e = new Error(`${what} needs a person. Run it in your own terminal, or use outlevo dashboard.`); (e as any).exit = 3; throw e; }
+  if (!process.stdin.isTTY) { const e = new Error(`${what} needs a person. Run it, or outlevo dashboard, in your own terminal.`); (e as any).exit = 3; throw e; }
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const answer = await rl.question(`${what}. Type yes to go ahead: `);
   rl.close();
   if (answer.trim().toLowerCase() !== 'yes') { const e = new Error('Nothing was done.'); (e as any).exit = 3; throw e; }
 }
+/** The same line for the dashboard. Its link goes to stdout, so a script that captures stdout must not get a page that can approve. */
+const atTerminal = () => process.env.OUTLEVO_ALLOW_SCRIPTED_APPROVAL === '1' || (!!process.stdin.isTTY && !!process.stdout.isTTY);
 const need = (v: string | undefined, what: string) => { if (!v) throw new Error(`Missing ${what}. See: outlevo --help`); return v; };
 const output = (data: unknown, human?: string) => console.log(flags.json || human === undefined ? JSON.stringify(data, null, 2) : human);
 
@@ -258,7 +260,13 @@ async function main() {
       console.error(`Running every ${a.config.loop_minutes} minutes. Ctrl-C to stop. Nothing sends without your approval.`);
       return runLoop(a, show, ctl.signal);
     }
-    case 'dashboard': { const d = await startDashboard(a, flags.port ? num(flags.port, 5757) : 5757); console.log(flags.json ? JSON.stringify({ url: d.url }) : `Open: ${d.url}`); return; }
+    case 'dashboard': {
+      const person = atTerminal();
+      const d = await startDashboard(a, flags.port ? num(flags.port, 5757) : 5757, { person });
+      if (flags.json) console.log(JSON.stringify({ url: d.url, can_approve: person }));
+      else console.log(`Open: ${d.url}${person ? '' : '\nView only: started without a terminal, so it cannot approve, answer or resume sending.'}`);
+      return;
+    }
     case 'status': {
       const count = (sql: string) => one<{ n: number }>(a.db, sql)?.n ?? 0;
       const s = { stopped: isStopped(a), companies: count('select count(*) as n from companies'), qualified: count("select count(*) as n from companies where status = 'qualified'"), contacts: count('select count(*) as n from contacts'), meetings: count("select count(*) as n from meetings where status = 'booked'"), to_review: reviewQueue(a).length, approved: count("select count(*) as n from drafts where status = 'approved'"), sent: count("select count(*) as n from drafts where status = 'sent'"), replies: count('select count(*) as n from replies') };
