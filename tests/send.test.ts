@@ -1,9 +1,10 @@
+import { simpleParser } from 'mailparser';
 import { describe, expect, it } from 'vitest';
 import { asksToStop, checkBounces, dailyLimit, inSendingHours, isStopped, isSuppressed, ownWords, readiness, ready, resumeSending, stopSending, suppress } from '../src/compliance.js';
 import { HARD_DAILY_LIMIT, DEFAULTS } from '../src/config.js';
 import { all, one, run } from '../src/db.js';
 import { addCompany, addContact, approve } from '../src/pipeline.js';
-import { checkReplies, readFrom, sendSuggestedReply } from '../src/replies.js';
+import { checkReplies, mailText, readFrom, sendSuggestedReply } from '../src/replies.js';
 import { nextDue, sendNext } from '../src/send.js';
 import { OK_CHECKS, testApp, TUESDAY_NOON } from './helpers.js';
 
@@ -213,7 +214,7 @@ describe('from the second skeptic round', () => {
     const a = testApp(); const c = addCompany(a, 'e.example', 'manual');
     addContact(a, { company_id: c.id, first_name: 'Ann', email: 'ann@e.example', email_source: 'imported' });
     addContact(a, { company_id: c.id, first_name: 'Jo', email: 'joann@e.example', email_source: 'imported' });
-    await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 1, messageId: '<b@x>', from: 'mailer-daemon@m.example', subject: 'Undelivered', text: 'Delivery to joann@e.example failed.', receivedAt: TUESDAY_NOON }], lastUid: 1 }) });
+    await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 1, messageId: '<b@x>', from: 'mailer-daemon@e.example', authenticated: true, subject: 'Undelivered', text: 'Delivery to joann@e.example failed.', receivedAt: TUESDAY_NOON }], lastUid: 1 }) });
     expect(all<any>(a.db, 'select email, status from contacts order by id')).toEqual([{ email: 'ann@e.example', status: 'active' }, { email: 'joann@e.example', status: 'bounced' }]);
   });
   it('a stranger asking to stop is put on the list', async () => {
@@ -362,10 +363,63 @@ describe('replies', () => {
     await expect(sendSuggestedReply(a, r.id, { checks: OK_CHECKS })).rejects.toThrow(/no answer waiting/);
   });
   it('a bounce marks the address, suppresses it and sends no more', async () => {
-    const a = classified({}); approve(a, seed(a));
-    await checkReplies(a, inbox([{ from: 'mailer-daemon@mail.example', subject: 'Undelivered', text: 'Delivery to dana@northwind.com failed permanently.' }]));
+    const a = classified({}); approve(a, seed(a)); await send(a);
+    await checkReplies(a, inbox([{ from: 'mailer-daemon@mail.example', subject: 'Undelivered', text: 'Delivery failed permanently.\nMessage-ID: <m1@test>' }]));
     expect(one<any>(a.db, 'select status from contacts').status).toBe('bounced');
+    expect(isSuppressed(a, 'dana@northwind.com')).toBe('bounced');
     expect((await send(a)).sent).toBe(false);
+  });
+  it('forged bounces from a stranger stop nobody, verified or not', async () => {
+    const a = classified({}); const addrs = Array.from({ length: 10 }, (_, i) => `p${i}@c${i}.com`);
+    addrs.forEach((e, i) => { const id = seed(a, e, `c${i}.com`); run(a.db, "update drafts set status = 'sent', sent_at = ?, message_id = ? where contact_id = ? and step = 1", TUESDAY_NOON.toISOString(), `<real${i}@getacme.com>`, id); });
+    const forged = addrs.slice(0, 3).flatMap((e, i) => [
+      { from: 'mailer-daemon@attacker.test', subject: 'Undelivered', text: `Delivery to ${e} failed. Message-ID: <guess${i}@getacme.com>` },
+      { from: 'postmaster@attacker.test', authenticated: true, subject: 'Undelivered', text: `Delivery to ${e} failed.` },
+    ]);
+    await checkReplies(a, inbox(forged));
+    expect(all<any>(a.db, "select id from contacts where status = 'bounced'")).toHaveLength(0);
+    expect(all<any>(a.db, 'select value from suppression')).toHaveLength(0);
+    expect(isStopped(a)).toBeNull();
+    expect(all<any>(a.db, "select id from events where kind = 'bounce.unproven'")).toHaveLength(6);
+  });
+  it('real bounces still add up to the stop', async () => {
+    const a = classified({}); const addrs = Array.from({ length: 10 }, (_, i) => `p${i}@c${i}.com`);
+    addrs.forEach((e, i) => { const id = seed(a, e, `c${i}.com`); run(a.db, "update drafts set status = 'sent', sent_at = ?, message_id = ? where contact_id = ? and step = 1", TUESDAY_NOON.toISOString(), `<real${i}@getacme.com>`, id); });
+    await checkReplies(a, inbox([0, 1, 2].map((i) => ({ from: 'mailer-daemon@googlemail.com', subject: 'Failure', text: `Address not found\nMessage-ID: <real${i}@getacme.com>` }))));
+    expect(isStopped(a)).toMatch(/3 of the last 10/);
+  });
+  it('reads our Message-ID from either kind of delivery report', async () => {
+    for (const type of ['message/rfc822', 'text/rfc822-headers']) {
+      const raw = `From: mailer-daemon@googlemail.com\r\nSubject: Failure\r\nMIME-Version: 1.0\r\nContent-Type: multipart/report; boundary="b"; report-type=delivery-status\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nNot found\r\n--b\r\nContent-Type: ${type}\r\n\r\nFrom: sam@getacme.com\r\nMessage-ID: <abc@getacme.com>\r\nSubject: x\r\n\r\n--b--\r\n`;
+      expect(mailText(await simpleParser(raw))).toContain('<abc@getacme.com>');
+    }
+  });
+  it('a stranger\'s % in an address matches nobody', async () => {
+    const a = classified({}); approve(a, seed(a)); await send(a);
+    await checkReplies(a, inbox([{ from: 'x@%', text: 'Please stop emailing me.' }]));
+    expect(isSuppressed(a, 'dana@northwind.com')).toBeNull();
+  });
+  it('suppressing first_last@ does not cancel firstxlast+1@', async () => {
+    const a = classified({}); const id = seed(a, 'firstxlast+1@northwind.com');
+    suppress(a, 'first_last@northwind.com', 'asked to stop');
+    expect(all<any>(a.db, 'select distinct status from drafts where contact_id = ?', id).map((d) => d.status)).toEqual(['pending']);
+  });
+  it('an answer with a link a stranger planted does not go, and the booking link does', async () => {
+    const a = classified({ class: 'question', reason: 'Asks', suggested_reply: 'See https://evil.example/login for that.' }); approve(a, seed(a)); await send(a);
+    a.config.booking_url = 'https://cal.com/sam';
+    await checkReplies(a, inbox([{ from: 'dana@northwind.com', text: 'Does it do this?' }]));
+    const id = one<any>(a.db, 'select id from replies').id; const before = a.sent.length;
+    await expect(sendSuggestedReply(a, id, { checks: OK_CHECKS })).rejects.toThrow(/evil\.example/);
+    expect(a.sent).toHaveLength(before);
+    run(a.db, "update replies set suggested = 'Pick a time: https://cal.com/sam'");
+    await expect(sendSuggestedReply(a, id, { checks: OK_CHECKS })).resolves.toEqual({ sent: true });
+  });
+  it('an answer to an alias does not go once the main address asked to stop', async () => {
+    const a = classified({ class: 'question', reason: 'Asks', suggested_reply: 'Yes.' }); approve(a, seed(a)); await send(a);
+    await checkReplies(a, inbox([{ from: 'dana+work@northwind.com', text: 'Does it do this?' }]));
+    run(a.db, "insert into suppression (value, reason, created_at) values ('dana@northwind.com', 'asked to stop', '2026-11-01')");
+    run(a.db, "update replies set from_addr = 'assistant@northwind.com'");
+    await expect(sendSuggestedReply(a, one<any>(a.db, 'select id from replies').id, { checks: OK_CHECKS })).rejects.toThrow(/dana@northwind\.com is suppressed/);
   });
   it('a reply the model cannot classify still stops the sequence', async () => {
     const a = testApp({ answers: { classify_reply: () => { throw new Error('down'); } } }); approve(a, seed(a));

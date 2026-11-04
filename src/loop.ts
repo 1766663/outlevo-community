@@ -17,8 +17,11 @@ export async function cycle(a: App, deps: { replies?: () => Promise<unknown>; se
       else r.errors.push(`${name}: ${(e as Error).message}`);
     }
   };
-  if (a.config.imap.host) await attempt('replies', async () => { r.replies = await (deps.replies ? deps.replies() : checkReplies(a)); });
-  await attempt('send', async () => { r.send = await (deps.send ? deps.send() : sendNext(a)); });
+  let unread = false;
+  if (a.config.imap.host) await attempt('replies', async () => { try { r.replies = await (deps.replies ? deps.replies() : checkReplies(a)); } catch (e) { unread = true; throw e; } });
+  // Opt-outs and bounces arrive there: with the mailbox unread, nobody gets mail this turn.
+  if (unread) r.send = { sent: false, reason: 'Replies could not be read, so nothing is sent this turn' };
+  else await attempt('send', async () => { r.send = await (deps.send ? deps.send() : sendNext(a)); });
   r.contacts = 0;
   if (a.secrets.hunter_key) await attempt('contacts', async () => { r.contacts = (await findContacts(a, { limit: 3 })).added; });
   r.wrote = 0;

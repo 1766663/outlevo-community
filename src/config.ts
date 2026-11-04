@@ -35,10 +35,11 @@ export const DEFAULTS: Config = {
 
 export const homeDir = (env = process.env) => env.OUTLEVO_HOME || join(process.cwd(), '.outlevo');
 
+const UNSAFE_KEY = new Set(['__proto__', 'constructor', 'prototype']);
 const merge = <T>(base: T, over: any): T => {
   if (Array.isArray(base) || typeof base !== 'object' || base === null) return over === undefined ? base : over;
   const out: any = { ...base };
-  for (const k of Object.keys(over ?? {})) out[k] = k in (base as any) ? merge((base as any)[k], over[k]) : over[k];
+  for (const k of Object.keys(over ?? {})) { if (!UNSAFE_KEY.has(k)) out[k] = Object.hasOwn(base as any, k) ? merge((base as any)[k], over[k]) : over[k]; }
   return out;
 };
 
@@ -55,13 +56,14 @@ export function saveConfig(c: Config, home = homeDir()) {
 /** `sender.email` style paths; numbers and booleans are parsed so the file keeps its types. */
 export function setPath(c: Config, path: string, value: string): Config {
   const keys = path.split('.');
+  if (keys.some((k) => UNSAFE_KEY.has(k))) throw new Error(`Unknown setting: ${path}`);
   let at: any = c; let known: any = DEFAULTS;
   for (const k of keys.slice(0, -1)) {
-    if (typeof at[k] !== 'object' || at[k] === null) throw new Error(`Unknown setting: ${path}`);
+    if (!Object.hasOwn(at, k) || typeof at[k] !== 'object' || at[k] === null) throw new Error(`Unknown setting: ${path}`);
     at = at[k]; known = known[k];
   }
   const last = keys.at(-1)!;
-  if (!(last in known)) throw new Error(`Unknown setting: ${path}`);
+  if (!known || !Object.hasOwn(known, last)) throw new Error(`Unknown setting: ${path}`);
   const kind = typeof known[last];
   let parsed: unknown;
   if (Array.isArray(known[last])) {

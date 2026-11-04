@@ -131,7 +131,8 @@ async function main() {
   }
   if (cmd === 'cloud' && sub === 'connect') {
     // Typed on the command line it would stay in the shell history, so stdin is the usual way in.
-    const key = arg ?? (process.stdin.isTTY ? await (async () => { const rl = createInterface({ input: process.stdin, output: process.stderr }); const k = await rl.question('Outlevo key: '); rl.close(); return k; })() : readFileSync(0, 'utf8').trim());
+    if (arg) throw new Error('A key on the command line stays in your shell history. Run outlevo cloud connect and paste it when asked, or pipe it in.');
+    const key = (process.stdin.isTTY ? await (async () => { const rl = createInterface({ input: process.stdin, output: process.stderr }); const k = await rl.question('Outlevo key: '); rl.close(); return k; })() : readFileSync(0, 'utf8').trim());
     saveSecret('outlevo_key', need(key.trim() || undefined, 'a key'));
     return output({ connected: true }, 'Key saved. Try: outlevo cloud status');
   }
@@ -225,7 +226,7 @@ async function main() {
       const q = reviewQueue(a).find((g) => g.contact_id === id);
       if (q && !flags.json) console.error(q.emails.map((e: any) => `${e.step}. ${e.subject}\n${e.body}`).join('\n\n'));
       await needsPerson(`Approve ${q ? `${q.emails.length} emails to ${q.email}` : `the emails for contact ${id}`}`);
-      const r = approve(a, id); return output(r, `Approved ${r.approved} emails. They send when due, if every guard allows.`); }
+      const r = approve(a, id, q?.fingerprint ?? undefined); return output(r, `Approved ${r.approved} emails. They send when due, if every guard allows.`); }
     case 'reject': {
       const r = reject(a, idOf(sub, 'A contact id'));
       if (!r.rejected) throw new Error(`Nothing waits for review for contact ${sub}`);

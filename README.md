@@ -132,14 +132,14 @@ These are in the code, and each has a test.
 
 | Rule | How |
 |---|---|
-| Approved emails only | A send picks only what a person approved, and checks it again at that moment. `approve`, `answer` and `resume` need a person at a terminal, or a dashboard started from one |
+| Approved emails only | A send picks only what a person approved, and checks it again at that moment. An approval covers the emails that were shown: if they changed in between, nothing is approved. `approve`, `answer` and `resume` need a person at a terminal, or a dashboard started from one |
 | Unsourced claims do not go out | The checks in [`src/lint.ts`](src/lint.ts) run when written and again when sent |
 | No fake threads or fake history | No "Re:" on a first email, no "as we discussed" |
 | Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
 | A reply stops the sequence | For that person and for the rest of their company. An out-of-office does not |
 | No guessed addresses | Addresses come from your import, from a page that prints them, or from a verification service |
 | Volume stays low | Ramps from your warm-up date, with a ceiling of 50 a day that settings cannot raise. By default, one email every 4 minutes in business hours on weekdays, which you can change |
-| It stops itself | Sending stops when over 3% of the last 200 people bounced, once there are 20 people or 3 bounces to go on. `outlevo stop` stops everything at any time, answers included |
+| It stops itself | Sending stops when over 3% of the last 200 people bounced, once there are 20 people or 3 bounces to go on. A bounce counts only if it quotes the email we sent or comes verified from your domain or theirs, so a stranger cannot stop you with forged ones; others are listed in the dashboard's Activity as not trusted. `outlevo run` sends nothing in a turn when it cannot read replies. `outlevo stop` stops everything at any time, answers included |
 | It needs your domain set up | No SPF, DMARC or postal address, no sending |
 
 It also respects `robots.txt`, will not fetch private network addresses, treats everything from the web and every reply as data rather than instructions, and gives the model no tools when it reads them, with one exception. Finding companies uses the model's web search, so a page in the results could try to steer it. That step gets your product summary, the ICP and your `--brief`, but not your imported lists or the names of your deals, and all it returns is domains, each read and checked like any other. To avoid it, use your own list with `outlevo companies import` and `outlevo research`.

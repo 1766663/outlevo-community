@@ -1,7 +1,7 @@
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import type { App } from './app.js';
 import { type Config, DEFAULTS, HARD_DAILY_LIMIT, settingsProblems } from './config.js';
-import { all, getMeta, logEvent, one, run, setMeta } from './db.js';
+import { all, getMeta, likeText, logEvent, one, run, setMeta } from './db.js';
 
 const FREE_WORDS = 6;
 // Said plainly, a request to stop needs no model. Anything less clear goes to the model, which can tell "stop emailing me" from "does it stop emailing people?".
@@ -57,9 +57,9 @@ export function isSuppressed(a: App, email: string): string | null {
 export function suppress(a: App, value: string, reason: string) {
   const v = value.includes('@') ? baseAddress(value) : cleanEntry(value);
   run(a.db, 'insert into suppression (value, reason, created_at) values (?, ?, ?) on conflict (value) do nothing', v, reason, a.now().toISOString());
-  const alias = v.includes('@') ? `${v.split('@')[0]}+%@${v.split('@')[1]}` : `%@${v}`;
+  const alias = v.includes('@') ? `${likeText(v.split('@')[0]!)}+%@${likeText(v.split('@')[1] ?? '')}` : `%@${likeText(v)}`;
   run(a.db, `update drafts set status = 'cancelled' where status in ('pending','approved','blocked')
-    and contact_id in (select id from contacts where email = ? or email like ? or email like ?)`, v, alias, `%.${v}`);
+    and contact_id in (select id from contacts where email = ? or email like ? escape '\\' or email like ? escape '\\')`, v, alias, `%.${likeText(v)}`);
   logEvent(a.db, a.now(), 'suppression.added', { value: v, reason });
 }
 

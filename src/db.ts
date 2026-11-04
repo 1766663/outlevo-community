@@ -24,6 +24,7 @@ create table if not exists drafts (
   lint text not null, status text not null check (status in ('pending','approved','rejected','blocked','sent','cancelled')),
   created_at text not null, approved_at text, sent_at text, message_id text, unique (contact_id, step));
 create table if not exists company_segments (company_id integer primary key references companies(id) on delete cascade, segment text not null);
+create table if not exists dropped_companies (company_id integer primary key references companies(id) on delete cascade, was text not null);
 create table if not exists dropped_drafts (draft_id integer primary key references drafts(id) on delete cascade, was text not null);
 create table if not exists company_emails (
   id integer primary key, company_id integer not null references companies(id) on delete cascade, step integer not null,
@@ -63,6 +64,9 @@ export function openPath(path: string): Db {
 export const all = <T = any>(db: Db, sql: string, ...args: any[]) => db.prepare(sql).all(...args) as T[];
 export const one = <T = any>(db: Db, sql: string, ...args: any[]) => db.prepare(sql).get(...args) as T | undefined;
 export const run = (db: Db, sql: string, ...args: any[]) => db.prepare(sql).run(...args);
+
+/** For text from outside inside a LIKE pattern, used with: escape '\\'. Otherwise a % in an address matches everybody. */
+export const likeText = (s: string) => s.replace(/[\\%_]/g, '\\$&');
 
 export function getMeta(db: Db, key: string) { return one<{ value: string }>(db, 'select value from meta where key = ?', key)?.value ?? null; }
 export function setMeta(db: Db, key: string, value: string | null) {
