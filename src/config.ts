@@ -89,7 +89,7 @@ export function settingsProblems(c: Config): string[] {
   if (!Array.isArray(l.send_hours) || l.send_hours.length !== 2 || !l.send_hours.every((h) => Number.isInteger(h) && h >= 0 && h <= 24) || l.send_hours[0] >= l.send_hours[1]) out.push('limits.send_hours must be two hours, like [9,17]');
   if (!Array.isArray(l.weekdays) || !l.weekdays.length || !l.weekdays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) out.push('limits.weekdays must be days from 0 (Sunday) to 6, like [1,2,3,4,5]');
   try { new Intl.DateTimeFormat('en-US', { timeZone: l.timezone }); } catch { out.push(`limits.timezone is not a time zone: ${l.timezone}`); }
-  if (c.warmup_start !== null && (typeof c.warmup_start !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(c.warmup_start) || Number.isNaN(new Date(c.warmup_start).getTime()))) out.push('warmup_start must be a date like 2026-11-01');
+  if (c.warmup_start !== null && (typeof c.warmup_start !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(c.warmup_start) || Number.isNaN(new Date(c.warmup_start).getTime()) || new Date(`${c.warmup_start.slice(0, 10)}T00:00:00Z`).toISOString().slice(0, 10) !== c.warmup_start.slice(0, 10))) out.push('warmup_start must be a date like 2026-11-01');
   return out;
 }
 

@@ -9,6 +9,7 @@ export type LintInput = {
 
 const SPAM = ['act now', 'limited time', 'guarantee', '100% free', 'risk-free', 'no obligation', 'click here', 'buy now', 'cash', 'winner', 'double your', 'once in a lifetime', 'urgent'];
 const FAKE_HISTORY = /\b(as (we )?(discussed|promised|agreed)\b(?! (in|on) (your|the|their))|following up on our (call|chat|conversation)|per our (call|conversation)|great (talking|speaking|chatting) (to|with) you|nice (to|meeting) you (again|last)|when we (spoke|talked|met))\b/i;
+const FAKE_FIRST = /\b(following up on (my|our) (last|previous|earlier)|thanks for (the|our) (call|chat|meeting)|as (i|we) mentioned)\b/i;
 const MACHINE = /\b(i hope this (email|message) finds you|i came across your (company|profile|website)|hope you('| a)re (doing )?well|in today'?s fast-paced|leverage synerg|unlock (the )?(full )?potential|game-?changer|revolutionize|seamless(ly)? integrat)\b/i;
 const NUMBER = /(?<![\w.])[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:%|k\b|m\b|bn?\b)?/gi;
 
@@ -27,7 +28,7 @@ export function lintEmail(i: LintInput): LintIssue[] {
   if (!i.subject.trim()) add('error', 'subject-empty', strict ? 'The subject is empty' : 'No subject found: start the file with a line like Subject: Your subject');
   if (!i.body.trim()) add('error', 'body-empty', 'The body is empty');
   if (/^\s*(re|fw|fwd)\s*:/i.test(i.subject) && step === 1) add('error', 'fake-thread', 'A first email must not pretend to be a reply or a forward');
-  if (FAKE_HISTORY.test(all)) add('error', 'fake-history', 'It claims a past conversation');
+  if (FAKE_HISTORY.test(all) || (step === 1 && FAKE_FIRST.test(all))) add('error', 'fake-history', 'It claims a past conversation');
   if (/\{\{.*?\}\}|\[(first ?name|name|company|your [^\]]+|insert[^\]]*)\]|<(first_?name|company)>/i.test(all)) add('error', 'merge-tag', 'A merge tag or placeholder would go out blank');
 
   const words = i.body.trim().split(/\s+/).filter(Boolean).length;

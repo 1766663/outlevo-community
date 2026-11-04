@@ -170,6 +170,37 @@ describe('suppression', () => {
   });
 });
 
+describe('from the second skeptic round', () => {
+  it('an alias of a suppressed address is suppressed too, either way round', () => {
+    const a = testApp(); suppress(a, 'a5@a5.example', 'x');
+    expect(isSuppressed(a, 'a5+work@a5.example')).toBeTruthy();
+    suppress(a, 'b0+tag@b0.example', 'x');
+    expect(isSuppressed(a, 'b0@b0.example')).toBeTruthy();
+    expect(isSuppressed(a, 'b0other@b0.example')).toBeNull();
+  });
+  it('suppressing cancels what waits for an alias', () => {
+    const a = testApp(); const id = seed(a, 'c1+work@c1.example', 'c1.example'); approve(a, id);
+    suppress(a, 'c1@c1.example', 'x');
+    expect(all<any>(a.db, 'select distinct status from drafts').map((d) => d.status)).toEqual(['cancelled']);
+  });
+  it('a bounce blames the exact address, not one inside it', async () => {
+    const a = testApp(); const c = addCompany(a, 'e.example', 'manual');
+    addContact(a, { company_id: c.id, first_name: 'Ann', email: 'ann@e.example', email_source: 'imported' });
+    addContact(a, { company_id: c.id, first_name: 'Jo', email: 'joann@e.example', email_source: 'imported' });
+    await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 1, messageId: '<b@x>', from: 'mailer-daemon@m.example', subject: 'Undelivered', text: 'Delivery to joann@e.example failed.', receivedAt: TUESDAY_NOON }], lastUid: 1 }) });
+    expect(all<any>(a.db, 'select email, status from contacts order by id')).toEqual([{ email: 'ann@e.example', status: 'active' }, { email: 'joann@e.example', status: 'bounced' }]);
+  });
+  it('a stranger asking to stop is put on the list', async () => {
+    const a = testApp();
+    await checkReplies(a, { fetchNew: async () => ({ messages: [{ uid: 1, messageId: '<s@x>', from: 'who@else.example', subject: 'Hi', text: 'Please stop emailing me', receivedAt: TUESDAY_NOON }], lastUid: 1 }) });
+    expect(isSuppressed(a, 'who@else.example')).toBeTruthy();
+  });
+  it('"please stop by Friday" is an invitation', () => {
+    expect(asksToStop('Re: hi', 'Please stop by Friday.')).toBe(false);
+    expect(asksToStop('Re: hi', 'Please stop, thanks')).toBe(true);
+  });
+});
+
 describe('limits', () => {
   it('ramps from the warm-up date', () => {
     const c = structuredClone(DEFAULTS);

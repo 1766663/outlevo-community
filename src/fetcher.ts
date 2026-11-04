@@ -39,6 +39,7 @@ export function isPrivateAddress(ip: string): boolean {
   if (g0 === 0x2001 && g1 === 0x0db8) return true; // documentation
   // IPv4 inside IPv6: mapped, compatible, NAT64, 6to4, Teredo. Each can lead back to a private IPv4 address.
   if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && (g5 === 0xffff || g5 === 0)) return privateV4(v4From(g6, g7));
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0) return privateV4(v4From(g6, g7));
   if (g0 === 0x64 && g1 === 0xff9b) return privateV4(v4From(g6, g7));
   if (g0 === 0x2002) return privateV4(v4From(g1, g2));
   if (g0 === 0x2001 && g1 === 0) return true;
