@@ -2,7 +2,10 @@ import { ImapFlow, type MailboxObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
 import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress, unsubscribeHeader } from './compliance.js';
-import { all, getMeta, logEvent, one, run, setMeta } from './db.js';
+import { all, getMeta, likeText, logEvent, one, run, setMeta } from './db.js';
+import { normalizeDomain } from './csv.js';
+import { lintEmail } from './lint.js';
+import { linkDomains } from './pipeline.js';
 
 export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
 export interface Inbox { fetchNew(sinceUid: number, knownValidity?: string | null): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number; validity?: string }> }
@@ -15,6 +18,10 @@ export const readFrom = (sinceUid: number, known: string | null | undefined, mai
   (known && known !== mailbox.validity) || mailbox.uidNext <= sinceUid ? 0 : sinceUid;
 
 const CLASSES = ['interested', 'question', 'not_now', 'wrong_person', 'unsubscribe', 'out_of_office', 'other'] as const;
+
+/** The words of a message, with what a delivery report attaches: the status, and the mail it is about. */
+export const mailText = (p: { text?: string | undefined; attachments: Array<{ contentType: string; content: Buffer }> }) =>
+  [p.text ?? '', ...p.attachments.filter((x) => /delivery-status|rfc822/i.test(x.contentType)).map((x) => x.content.toString('utf8'))].join('\n');
 
 export function imapInbox(a: App): Inbox {
   const { imap } = a.config;
@@ -34,7 +41,7 @@ export function imapInbox(a: App): Inbox {
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: [p.text ?? '', ...p.attachments.filter((x) => /delivery-status|rfc822-headers/i.test(x.contentType)).map((x) => x.content.toString('utf8'))].join('\n'), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: mailText(p), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid, validity };
@@ -49,6 +56,7 @@ const REMINDER = /\breminder\b/i;
 const CANCELLED = /\b(cancel+ed|declined)\b/i;
 const BOOKED = /\b(new event|invitation|booked|confirmed|scheduled|rescheduled)\b/i;
 const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+const MESSAGE_ID = /<[^<>\s]+@[^<>\s]+>/g;
 
 /** Reads the topmost Authentication-Results, the one your own provider added. Anything else in the message came from the sender. */
 export function senderProven(header: unknown, fromDomain: string): boolean {
@@ -107,8 +115,19 @@ const cancelRest = (a: App, contactId: number) => run(a.db, "update drafts set s
 
 function handleBounce(a: App, m: Incoming): boolean {
   if (!/^(mailer-daemon|postmaster|mail-daemon)@/i.test(m.from)) return false;
+  // A bounce stops a person and can stop all sending, and a From line costs nothing to forge. The surest proof is our own Message-ID quoted back:
+  // only whoever received that email has it, and then it is that person's own address at stake.
+  const ids = [...new Set(m.text.match(MESSAGE_ID) ?? [])].slice(0, 100);
+  const quoted = ids.length ? one<{ id: number; email: string }>(a.db, `select p.id, p.email from drafts d join contacts p on p.id = d.contact_id where d.status = 'sent' and d.message_id in (${ids.map(() => '?').join(',')}) limit 1`, ...ids) : undefined;
   // An exact address: ann@ must not take the blame for joann@.
-  const hit = bookedContact(a, m.text) ?? one<{ id: number; email: string }>(a.db, `select id, email from contacts where status = 'active' and email in (${[...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()))].map(() => '?').join(',') || "''"}) limit 1`, ...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase())));
+  const hit = quoted ?? bookedContact(a, m.text) ?? one<{ id: number; email: string }>(a.db, `select id, email from contacts where status = 'active' and email in (${[...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()))].map(() => '?').join(',') || "''"}) limit 1`, ...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase())));
+  // Failing that, a verified sender, on your domain or theirs: a stranger can verify a mailer-daemon on a domain of their own.
+  const host = m.from.split('@')[1] ?? '';
+  const onSide = (email: string) => [email.split('@')[1], a.config.sender.email.split('@')[1]].some((d) => d && (host === d || host.endsWith(`.${d}`)));
+  if (hit && !quoted && !(m.authenticated && onSide(hit.email))) {
+    logEvent(a.db, a.now(), 'bounce.unproven', { from: m.from, contact_id: hit.id, subject: m.subject.slice(0, 200) });
+    return true;
+  }
   if (hit) {
     run(a.db, "update contacts set status = 'bounced' where id = ?", hit.id);
     cancelRest(a, hit.id);
@@ -126,7 +145,7 @@ function whoWrote(a: App, m: Incoming): { contact: Who | undefined; direct: bool
   const exact = one<Who>(a.db, `${q}email = ?`, m.from);
   if (exact) return { contact: exact, direct: true };
   const [local = '', domain = ''] = m.from.split('@');
-  const plus = all<Who>(a.db, `${q}email like ?`, `%@${domain}`).find((c) => c.email.split('@')[0]!.split('+')[0] === local.split('+')[0]);
+  const plus = all<Who>(a.db, `${q}email like ? escape '\\'`, `%@${likeText(domain)}`).find((c) => c.email.split('@')[0]!.split('+')[0] === local.split('+')[0]);
   if (plus) return { contact: plus, direct: true };
   for (const id of [m.inReplyTo, ...(m.references ?? [])]) {
     if (!id) continue;
@@ -134,7 +153,7 @@ function whoWrote(a: App, m: Incoming): { contact: Who | undefined; direct: bool
     if (t) return { contact: t, direct: false };
   }
   // A colleague with no thread is only taken at their word when asking to stop.
-  const colleague = domain ? one<Who>(a.db, `select p.id, p.first_name, p.company_id, p.email from contacts p join drafts d on d.contact_id = p.id where d.status = 'sent' and p.email like ? order by d.sent_at desc`, `%@${domain}`) : undefined;
+  const colleague = domain ? one<Who>(a.db, `select p.id, p.first_name, p.company_id, p.email from contacts p join drafts d on d.contact_id = p.id where d.status = 'sent' and p.email like ? escape '\\' order by d.sent_at desc`, `%@${likeText(domain)}`) : undefined;
   return colleague && asksToStop(m.subject, m.text) ? { contact: colleague, direct: false } : { contact: undefined, direct: false };
 }
 
@@ -191,12 +210,21 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
 
 /** An answer is mail too: the kill switch, suppression and the readiness checks hold. Hours and daily limits do not: they asked. */
 export async function sendSuggestedReply(a: App, replyId: number, deps: { checks?: () => Promise<Check[]> } = {}) {
-  const r = one<{ id: number; from_addr: string; subject: string | null; suggested: string | null; suggested_status: string; message_id: string }>(a.db, 'select * from replies where id = ?', replyId);
+  const r = one<{ id: number; contact_id: number | null; from_addr: string; subject: string | null; suggested: string | null; suggested_status: string; message_id: string }>(a.db, 'select * from replies where id = ?', replyId);
   if (!r?.suggested || r.suggested_status !== 'pending') throw new Error(`Reply ${replyId} has no answer waiting`);
   const stopped = isStopped(a);
   if (stopped) throw new Error(`Sending is stopped: ${stopped}`);
-  const why = isSuppressed(a, r.from_addr);
-  if (why) throw new Error(`Not sent: ${r.from_addr} is suppressed (${why})`);
+  // Someone can write from an alias after asking to stop on their main address, or the other way round.
+  const who = r.contact_id ? one<{ email: string; domain: string }>(a.db, 'select p.email, c.domain from contacts p join companies c on c.id = p.company_id where p.id = ?', r.contact_id) : undefined;
+  for (const address of [r.from_addr, ...(who ? [who.email] : [])]) {
+    const why = isSuppressed(a, address);
+    if (why) throw new Error(`Not sent: ${address} is suppressed (${why})`);
+  }
+  // A model drafted this after reading a stranger's words, so it may not carry a link they planted.
+  const booking = normalizeDomain(a.config.booking_url);
+  const allowedLinkDomains = [...linkDomains(a, who?.domain ?? r.from_addr.split('@')[1] ?? ''), ...(booking ? [booking] : [])];
+  const badLink = lintEmail({ subject: 'x', body: r.suggested, strict: false, allowedLinkDomains }).find((x) => x.rule === 'link-domain');
+  if (badLink) throw new Error(`Not sent: ${badLink.message}. Dismiss this answer and write your own.`);
   const checks = await (deps.checks ? deps.checks() : readiness(a));
   if (!ready(checks)) throw new Error(`Not ready to send: ${checks.filter((c) => !c.ok && c.blocking).map((c) => c.name).join(', ')}. Run: outlevo doctor`);
   if (!run(a.db, "update replies set suggested_status = 'sent' where id = ? and suggested_status = 'pending'", replyId).changes) throw new Error(`Reply ${replyId} has no answer waiting`);

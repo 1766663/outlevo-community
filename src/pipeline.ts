@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { type App, arr, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
 import { normalizeDomain, parseCsv } from './csv.js';
@@ -231,6 +232,9 @@ export async function researchCompany(a: App, companyId: number) {
 export type NewContact = { company_id: number; first_name: string; last_name?: string | null; title?: string | null; email: string; email_source: 'imported' | 'published' | 'guess' | 'verified'; cloud_id?: string };
 const EMAIL = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
 const PERSONAL = /@(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|proton|protonmail|gmx|mail|yandex|zoho)\.[a-z.]+$/i;
+/** Whether an address a provider handed back belongs at this company and may be written to at all. Providers are outside text like any other. */
+export const addressFits = (a: App, email: string, domain: string) => { const host = email.trim().toLowerCase().split('@')[1] ?? ''; return (host === domain || host.endsWith(`.${domain}`)) && !isSuppressed(a, email); };
+
 export function addContact(a: App, n: NewContact): boolean {
   const email = n.email.trim().toLowerCase();
   if (!EMAIL.test(email)) return false;
@@ -427,17 +431,21 @@ export function dropCompany(a: App, ref: string, undo = false) {
   const c = companyByRef(a, ref);
   if (undo) {
     if (c.status !== 'dropped') throw new Error(`${c.domain} is not dropped`);
-    run(a.db, "update companies set status = 'qualified' where id = ?", c.id);
+    // Back to what it was: a company that did not fit must not come back as one that did. Dropped before this was kept: qualified.
+    const was = one<{ was: string }>(a.db, 'select was from dropped_companies where company_id = ?', c.id)?.was ?? 'qualified';
+    run(a.db, 'update companies set status = ? where id = ?', was, c.id);
+    run(a.db, 'delete from dropped_companies where company_id = ?', c.id);
     // Only what the drop stopped comes back, and it waits for a person again. Whoever answered, bounced or opted out meanwhile stays stopped.
     const held = all<{ id: number; was: string; email: string }>(a.db, `select d.id, h.was, p.email from dropped_drafts h join drafts d on d.id = h.draft_id join contacts p on p.id = d.contact_id
       where p.company_id = ? and p.status = 'active' and not exists (select 1 from replies r where r.contact_id = p.id)
         and not exists (select 1 from meetings m join contacts q on q.id = m.contact_id where q.company_id = p.company_id and m.status = 'booked')`, c.id);
-    const back = held.filter((d) => !isSuppressed(a, d.email));
+    const back = was === 'qualified' ? held.filter((d) => !isSuppressed(a, d.email)) : [];
     for (const d of back) run(a.db, 'update drafts set status = ? where id = ?', d.was === 'blocked' ? 'blocked' : 'pending', d.id);
     run(a.db, 'delete from dropped_drafts where draft_id in (select d.id from drafts d join contacts p on p.id = d.contact_id where p.company_id = ?)', c.id);
     logEvent(a.db, a.now(), 'company.restored', { company_id: c.id });
-    return { domain: c.domain, status: 'qualified', restored: back.length };
+    return { domain: c.domain, status: was, restored: back.length };
   }
+  run(a.db, "insert or ignore into dropped_companies (company_id, was) select id, status from companies where id = ? and status <> 'dropped'", c.id);
   run(a.db, "update companies set status = 'dropped' where id = ?", c.id);
   run(a.db, "insert or replace into dropped_drafts (draft_id, was) select id, status from drafts where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.id);
   run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.id);
@@ -482,7 +490,7 @@ export function reviewQueue(a: App) {
     where d.status in ('pending','blocked') order by d.contact_id, d.step`);
   const byContact = new Map<number, any>();
   for (const d of drafts) {
-    const g = byContact.get(d.contact_id) ?? { why: JSON.parse(one<{ reasons: string | null }>(a.db, 'select reasons from companies where id = ?', d.company_id)?.reasons ?? '{}').reasons?.map((r: { text: string }) => r.text) ?? [], contact_id: d.contact_id, name: `${d.first_name} ${d.last_name ?? ''}`.trim(), title: d.title, email: d.email, email_source: d.email_source, domain: d.domain, company: d.company, score: d.score, status: d.status, angle: d.angle, emails: [], company_id: d.company_id };
+    const g = byContact.get(d.contact_id) ?? { fingerprint: pendingFingerprint(a, d.contact_id), why: JSON.parse(one<{ reasons: string | null }>(a.db, 'select reasons from companies where id = ?', d.company_id)?.reasons ?? '{}').reasons?.map((r: { text: string }) => r.text) ?? [], contact_id: d.contact_id, name: `${d.first_name} ${d.last_name ?? ''}`.trim(), title: d.title, email: d.email, email_source: d.email_source, domain: d.domain, company: d.company, score: d.score, status: d.status, angle: d.angle, emails: [], company_id: d.company_id };
     const claims: Claim[] = JSON.parse(d.claims);
     g.emails.push({ step: d.step, subject: d.subject, body: d.body, delay_days: d.delay_days, issues: JSON.parse(d.lint),
       claims: claims.map((c) => ({ ...c, source: one(a.db, 'select quote, source_url, fetched_at from facts where id = ?', c.fact_id) ?? null })) });
@@ -491,8 +499,21 @@ export function reviewQueue(a: App) {
   return [...byContact.values()];
 }
 
-export function approve(a: App, contactId: number) {
-  const n = run(a.db, "update drafts set status = 'approved', approved_at = ? where contact_id = ? and status = 'pending'", iso(a), contactId).changes;
+/** What is waiting for this person right now, word for word. A yes is a yes to this, not to whatever is there when it arrives. */
+export function pendingFingerprint(a: App, contactId: number) {
+  const rows = all<{ step: number; subject: string; body: string; delay_days: number }>(a.db, "select step, subject, body, delay_days from drafts where contact_id = ? and status = 'pending' order by step", contactId);
+  return rows.length ? createHash('sha256').update(JSON.stringify(rows.map((r) => [r.step, r.subject, r.body, r.delay_days]))).digest('hex') : null;
+}
+
+export function approve(a: App, contactId: number, seen?: string) {
+  a.db.exec('begin immediate');
+  let n: number | bigint;
+  try {
+    const now = pendingFingerprint(a, contactId);
+    if (seen !== undefined && now && now !== seen) throw new Error('These emails changed after you saw them, so nothing was approved. Look at them again.');
+    n = run(a.db, "update drafts set status = 'approved', approved_at = ? where contact_id = ? and status = 'pending'", iso(a), contactId).changes;
+    a.db.exec('commit');
+  } catch (e) { a.db.exec('rollback'); throw e; }
   if (!n) {
     const blocked = one(a.db, "select 1 from drafts where contact_id = ? and status = 'blocked'", contactId);
     throw new Error(blocked ? 'These emails failed the checks and cannot be approved. Write them again: outlevo write --contact ' + contactId : `Nothing waits for approval for contact ${contactId}`);

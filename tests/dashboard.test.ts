@@ -1,7 +1,7 @@
 import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isStopped, stopSending } from '../src/compliance.js';
-import { logEvent, run } from '../src/db.js';
+import { logEvent, one, run } from '../src/db.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { testApp } from './helpers.js';
 
@@ -28,10 +28,20 @@ async function start(person = true) {
 describe('dashboard', () => {
   it('listens only on loopback', async () => { const { d } = await start(); expect((d.server.address() as any).address).toBe('127.0.0.1'); });
   it('turns the link into an HttpOnly, SameSite cookie', async () => {
-    const { d, call } = await start();
-    const r = await call(`/?token=${d.token}`);
+    const a = testApp(); const d = await startDashboard(a, 0, { person: true }); close = () => d.server.close();
+    const r = await fetch(d.url, { redirect: 'manual' });
     expect(r.status).toBe(303);
-    expect(r.headers['set-cookie'][0]).toMatch(/HttpOnly; SameSite=Strict/);
+    expect(r.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict/);
+    expect(r.headers.get('set-cookie')).not.toContain(d.token);
+  });
+  it('the link works once: the token is no session, and a used link gets nobody in', async () => {
+    const { d, call, cookie } = await start();
+    const again = await call(`/?token=${d.token}`);
+    expect(again.status).toBe(401);
+    expect(again.body).toMatch(/works once/);
+    expect((await call('/api/state', { headers: { cookie: `ol_session=${d.token}` } })).status).toBe(401);
+    expect((await call(`/?token=${d.token}`, { headers: { cookie } })).status).toBe(303); // your own tab, reloaded on the old link
+    expect((await call('/', { headers: { cookie } })).status).toBe(200);
   });
   it('refuses the page and the API without the token', async () => {
     const { call } = await start();
@@ -116,8 +126,25 @@ describe('dashboard', () => {
   it('is view only unless told a person started it', async () => {
     const a = testApp(); const d = await startDashboard(a, 0); close = () => d.server.close();
     const u = new URL(d.url);
-    const r = await fetch(`http://127.0.0.1:${u.port}/api/resume`, { method: 'POST', headers: { cookie: `ol_session=${d.token}`, 'content-type': 'application/json' }, body: '{}' });
+    const cookie = (await fetch(d.url, { redirect: 'manual' })).headers.get('set-cookie')!.split(';')[0]!;
+    const r = await fetch(`http://127.0.0.1:${u.port}/api/resume`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' });
     expect(r.status).toBe(403);
+  });
+  it('approves only with the emails it was shown, and says when they changed', async () => {
+    const { a, call, cookie } = await start();
+    const c = run(a.db, "insert into companies (domain, source, status, created_at) values ('n.com', 'csv', 'qualified', '2026-11-01')").lastInsertRowid;
+    const p = Number(run(a.db, "insert into contacts (company_id, first_name, email, email_source, created_at) values (?, 'D', 'd@n.com', 'imported', '2026-11-01')", c).lastInsertRowid);
+    run(a.db, "insert into drafts (contact_id, step, subject, body, claims, lint, status, created_at) values (?, 1, 'A', 'b', '[]', '[]', 'pending', '2026-11-01')", p);
+    const approve = (body: unknown) => call('/api/approve', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const seen = JSON.parse((await call('/api/state', { headers: { cookie } })).body).review[0].fingerprint;
+    expect((await approve({ id: p })).status).toBe(400);
+    run(a.db, "update drafts set subject = 'B'");
+    const r = await approve({ id: p, seen });
+    expect(JSON.parse(r.body).error).toMatch(/changed after you saw them/);
+    expect(one<any>(a.db, 'select status from drafts').status).toBe('pending');
+    const fresh = JSON.parse((await call('/api/state', { headers: { cookie } })).body).review[0].fingerprint;
+    expect((await approve({ id: p, seen: fresh })).status).toBe(200);
+    expect(one<any>(a.db, 'select status from drafts').status).toBe('approved');
   });
   it('answers a bad request with its reason', async () => {
     const { call, cookie } = await start();

@@ -88,9 +88,11 @@ const NEEDS_PERSON = new Set(['/api/approve', '/api/reply/send', '/api/resume'])
 export function startDashboard(a: App, port = 5757, opts: { person?: boolean } = {}): Promise<{ server: Server; url: string; token: string }> {
   const person = opts.person === true;
   const token = randomBytes(24).toString('base64url');
-  const tokenOk = (given: string | undefined) => {
+  // The link sits in a terminal and a browser history, so it works once and the page runs on a secret of its own.
+  const session = randomBytes(24).toString('base64url'); let linkUsed = false;
+  const same = (given: string | undefined, secret: string) => {
     if (!given) return false;
-    const x = Buffer.from(given); const y = Buffer.from(token);
+    const x = Buffer.from(given); const y = Buffer.from(secret);
     return x.length === y.length && timingSafeEqual(x, y);
   };
   const cookieOf = (req: IncomingMessage) => req.headers.cookie?.match(/(?:^|;\s*)ol_session=([^;]+)/)?.[1];
@@ -104,7 +106,7 @@ export function startDashboard(a: App, port = 5757, opts: { person?: boolean } =
   const idOf = (b: any) => { const n = Number(b.id); if (!Number.isInteger(n) || n <= 0) throw new Error('A valid id is needed'); return n; };
 
   const actions: Record<string, (b: any) => unknown> = {
-    '/api/approve': (b) => approve(a, idOf(b)),
+    '/api/approve': (b) => { const id = idOf(b); if (typeof b.seen !== 'string') throw new Error('Approve from the page, where the emails are shown'); return approve(a, id, b.seen); },
     '/api/reject': (b) => reject(a, idOf(b)),
     '/api/stop': () => { stopSending(a, 'Stopped from the dashboard'); return { stopped: true }; },
     '/api/resume': () => { resumeSending(a); return { stopped: false }; },
@@ -121,18 +123,21 @@ export function startDashboard(a: App, port = 5757, opts: { person?: boolean } =
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
       if (req.method === 'GET' && url.pathname === '/') {
-        if (tokenOk(url.searchParams.get('token') ?? undefined)) {
-          res.writeHead(303, { ...SECURITY, location: '/', 'set-cookie': `ol_session=${token}; HttpOnly; SameSite=Strict; Path=/` });
+        if (!linkUsed && same(url.searchParams.get('token') ?? undefined, token)) {
+          linkUsed = true;
+          res.writeHead(303, { ...SECURITY, location: '/', 'set-cookie': `ol_session=${session}; HttpOnly; SameSite=Strict; Path=/` });
           return res.end();
         }
-        if (!tokenOk(cookieOf(req))) { res.writeHead(401, { ...SECURITY, 'content-type': 'text/plain' }); return res.end('Open the link that outlevo dashboard printed.'); }
+        const inside = same(cookieOf(req), session);
+        if (inside && url.search) { res.writeHead(303, { ...SECURITY, location: '/' }); return res.end(); }
+        if (!inside) { res.writeHead(401, { ...SECURITY, 'content-type': 'text/plain' }); return res.end(linkUsed ? 'That link works once and has been used. Start outlevo dashboard again for a new one.' : 'Open the link that outlevo dashboard printed.'); }
         res.writeHead(200, { ...SECURITY, 'content-type': 'text/html; charset=utf-8' });
         return res.end(readFileSync(join(PUBLIC, 'index.html')));
       }
       if (url.pathname === '/favicon.ico') { res.writeHead(204, SECURITY); return res.end(); }
       const asset = ASSETS[url.pathname];
       if (req.method === 'GET' && asset) { res.writeHead(200, { ...SECURITY, 'content-type': `${asset[1]}; charset=utf-8` }); return res.end(readFileSync(join(PUBLIC, asset[0]))); }
-      if (!tokenOk(cookieOf(req))) return json(res, 401, { error: 'Open the link that outlevo dashboard printed' });
+      if (!same(cookieOf(req), session)) return json(res, 401, { error: 'Open the link that outlevo dashboard printed' });
 
       if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, { ...dashboardState(a), person });
       if (req.method === 'GET' && url.pathname === '/api/doctor') return json(res, 200, await readiness(a));

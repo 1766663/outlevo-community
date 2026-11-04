@@ -10,4 +10,4 @@ What we care about most:
 - Anything that sends an email without approval, or to a suppressed address.
 - Secrets leaving `.outlevo/`.
 
-The dashboard listens on 127.0.0.1 only, and needs the link it prints. Started without a terminal, it cannot approve, answer or resume sending. Do not put it behind a public proxy.
+The dashboard listens on 127.0.0.1 only, and needs the link it prints, which works once. Started without a terminal, it cannot approve, answer or resume sending. Do not put it behind a public proxy.

@@ -1,4 +1,4 @@
-import { mkdtempSync, statSync } from 'node:fs';
+import { mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -8,7 +8,9 @@ import { normalizeDomain, parseCsv } from '../src/csv.js';
 import { one } from '../src/db.js';
 import { cycle } from '../src/loop.js';
 import { AnthropicModel, BudgetExhausted, ClaudeCliModel, metered, ModelRefused, parseJson } from '../src/model.js';
-import { addCompany } from '../src/pipeline.js';
+import { addCompany, addressFits } from '../src/pipeline.js';
+import { cloudOf, cloudUrlOk } from '../src/cloud.js';
+import { suppress } from '../src/compliance.js';
 import { testApp } from './helpers.js';
 
 describe('csv', () => {
@@ -119,8 +121,38 @@ describe('cycle', () => {
   it('does not stop at one failure, and reports it', async () => {
     const a = testApp();
     addCompany(a, 'n.example', 'manual');
+    const held = testApp(); held.config.imap.host = 'imap.example'; let sends = 0;
+    const r0 = await cycle(held, { replies: async () => { throw new Error('imap down'); }, send: async () => { sends++; return {}; } });
+    expect(sends).toBe(0); // opt-outs arrive there: unread, nobody gets mail this turn
+    expect(r0.errors.join()).toMatch(/imap down/);
     const r = await cycle(a, { send: async () => { throw new Error('smtp down'); } });
     expect(r.errors.join()).toMatch(/smtp down/);
     expect(r.errors.join()).toMatch(/research: Define your ICP/);
+  });
+});
+
+describe('settings and outside addresses', () => {
+  it('no setting can reach the prototype of everything', () => {
+    for (const p of ['__proto__.polluted', 'constructor.prototype.polluted', 'limits.__proto__.polluted', '__proto__.toString']) expect(() => setPath(structuredClone(DEFAULTS), p, 'x')).toThrow(/Unknown setting/);
+    expect(({} as any).polluted).toBeUndefined();
+  });
+  it('a config file cannot either', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cfg-')); writeFileSync(join(home, 'config.json'), '{"__proto__":{"polluted":1},"limits":{"__proto__":{"polluted":1}},"website":"https://a.com"}');
+    const c = loadConfig(home);
+    expect(c.website).toBe('https://a.com'); expect((c as any).polluted).toBeUndefined(); expect((c.limits as any).polluted).toBeUndefined();
+  });
+  it('your key only goes to Outlevo over https, or to this machine', () => {
+    for (const ok of ['https://api.outlevo.com', 'http://127.0.0.1:8787']) expect(cloudUrlOk(ok)).toBe(true);
+    for (const bad of ['http://api.outlevo.com', 'https://outlevo.com.evil.example', 'https://evil.example', 'nonsense']) expect(cloudUrlOk(bad)).toBe(false);
+    const a = testApp(); a.secrets.outlevo_key = 'k'; a.config.cloud_url = 'https://evil.example';
+    expect(() => cloudOf(a)).toThrow(/not sent/);
+  });
+  it('an address a provider hands back must be on the company\'s domain and not suppressed', () => {
+    const a = testApp(); suppress(a, 'gone@n.com', 'asked to stop');
+    expect(addressFits(a, 'dana@n.com', 'n.com')).toBe(true);
+    expect(addressFits(a, 'dana@eu.n.com', 'n.com')).toBe(true);
+    expect(addressFits(a, 'dana@other.com', 'n.com')).toBe(false);
+    expect(addressFits(a, 'dana@evil-n.com', 'n.com')).toBe(false);
+    expect(addressFits(a, 'gone@n.com', 'n.com')).toBe(false);
   });
 });

@@ -9,7 +9,10 @@ export const CLOUD_URL = 'https://outlevo.com/?utm_source=community&utm_medium=p
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const webUrl = (u: string) => { try { const x = new URL(u); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : null; } catch { return null; } };
 // A spreadsheet would run a cell that starts like a formula, and these cells hold text from strangers' websites.
-const csvCell = (v: unknown) => { const s = /^[=+\-@\t\r]/.test(String(v ?? '')) ? `'${v}` : String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s; };
+const csvCell = (v: unknown) => { const s = /^\s*[=+\-@]/.test(String(v ?? '')) ? `'${v}` : String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s; };
+
+// Scraped text ends up in these files, and a Markdown viewer would load an image or run a tag in it. Addresses in <angle brackets> stay.
+const inertMd = (md: string) => md.replace(/!\[/g, '!\\[').replace(/<(?=[a-z!/?][^@>]*>)/gi, '&lt;');
 
 type Email = { step: number; sent: boolean; subject: string; body: string; delay_days: number; claims: Array<{ text: string; source: { quote: string; source_url: string } | null }> };
 export type PackCompany = { id: number; domain: string; name: string | null; score: number | null; why: string[]; to: string; person: string | null; email: string | null; emails: Email[]; blocked: boolean };
@@ -99,9 +102,9 @@ export function buildPack(a: App, out = 'sales-pack') {
     unfinished: [...domainsWhere(a, "status = 'new'"), ...all_.filter((c) => !c.emails.length).map((c) => c.domain)],
     unreadable: domainsWhere(a, "status = 'error'"),
   };
-  for (const c of ready) writeFileSync(join(mails, `${c.domain}.md`), emailMd(c)); // a domain is checked before it is stored, so it is a safe file name
+  for (const c of ready) writeFileSync(join(mails, `${c.domain}.md`), inertMd(emailMd(c))); // a domain is checked before it is stored, so it is a safe file name
   const icp = getIcp(a); const product = one<{ summary: string }>(a.db, 'select summary from product');
-  writeFileSync(join(building, 'ideal-customer.md'), [`# Who to sell to`, '', product?.summary ?? '', '', icp?.summary ?? '', '', `Industries: ${icp?.industries.join(', ') ?? ''}`, `Company size: ${icp?.company_size ?? ''}`, `Markets: ${icp?.markets.join(', ') ?? ''}`, `Buyers: ${icp?.buyer_titles.join(', ') ?? ''}`, `Must have: ${icp?.must_have.join('; ') ?? ''}`, `Rule out: ${icp?.rule_out.join('; ') ?? ''}`, '', `Learned from: ${icp?.learned_from ?? ''}`, ''].join('\n'));
+  writeFileSync(join(building, 'ideal-customer.md'), inertMd([`# Who to sell to`, '', product?.summary ?? '', '', icp?.summary ?? '', '', `Industries: ${icp?.industries.join(', ') ?? ''}`, `Company size: ${icp?.company_size ?? ''}`, `Markets: ${icp?.markets.join(', ') ?? ''}`, `Buyers: ${icp?.buyer_titles.join(', ') ?? ''}`, `Must have: ${icp?.must_have.join('; ') ?? ''}`, `Rule out: ${icp?.rule_out.join('; ') ?? ''}`, '', `Learned from: ${icp?.learned_from ?? ''}`, ''].join('\n')));
   const head = ['company', 'website', 'score', 'why', 'write_to', 'name', 'email', 'quote', 'source', 'subject_1', 'email_1', 'subject_2', 'email_2', 'subject_3', 'email_3'];
   const rows = ready.map((c) => { const q = c.emails[0]?.claims[0]?.source; return [c.name ?? c.domain, `https://${c.domain}`, c.score, c.why.join('; '), c.to, c.person, c.email, q?.quote, q?.source_url, ...[0, 1, 2].flatMap((i) => [c.emails[i]?.subject, c.emails[i]?.body])].map(csvCell).join(','); });
   writeFileSync(join(building, 'companies.csv'), [head.join(','), ...rows].join('\n') + '\n');

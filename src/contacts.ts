@@ -1,7 +1,7 @@
 import type { App } from './app.js';
 import { all, logEvent, one } from './db.js';
 import { bumpUsage, usageToday } from './model.js';
-import { addContact, getIcp, titleFit } from './pipeline.js';
+import { addContact, addressFits, getIcp, titleFit } from './pipeline.js';
 
 export class HunterRefused extends Error {}
 type HunterEmail = { value?: string; type?: string; confidence?: number; first_name?: string | null; last_name?: string | null; position?: string | null };
@@ -37,7 +37,7 @@ export async function findContacts(a: App, opts: { limit: number; doFetch?: type
     if (!spend()) break;
     looked++;
     const found = await hunter<{ data?: { emails?: HunterEmail[] } }>('/domain-search', { domain: c.domain, type: 'personal', limit: '10' }, key, doFetch);
-    const people = (found.data?.emails ?? []).filter((e) => e.value && e.first_name)
+    const people = (found.data?.emails ?? []).filter((e) => e.value && e.first_name && addressFits(a, e.value, c.domain))
       .sort((x, y) => titleFit(y.position ?? null, buyers) - titleFit(x.position ?? null, buyers) || (y.confidence ?? 0) - (x.confidence ?? 0)).slice(0, 3);
     for (const p of people) {
       if (!spend()) { outOfLookups = true; break; }

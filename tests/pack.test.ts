@@ -258,6 +258,24 @@ describe('rewrite', () => {
     expect(r.issues.length).toBeGreaterThan(0);
     expect(one<any>(a.db, 'select subject from company_emails where step = 1').subject).toBe('Austin hires');
   });
+  it('a rewrite while a person is deciding is not approved by their yes', async () => {
+    const { a, id } = await prepared();
+    addContact(a, { company_id: id, first_name: 'Dana', email: 'dana@northwind.com', email_source: 'imported' });
+    const [who] = nextToWrite(a, 5); await writeSequence(a, who!);
+    const shown = reviewQueue(a)[0].fingerprint;
+    withWriter(a, asked());
+    await rewriteEmails(a, 'northwind.com', 'shorter');
+    expect(() => approve(a, who!, shown)).toThrow(/changed after you saw them/);
+    expect(all<any>(a.db, 'select status from drafts').map((d) => d.status)).toEqual(['pending']);
+    expect(approve(a, who!, reviewQueue(a)[0].fingerprint).approved).toBe(1);
+  });
+  it('--undo puts a company back as it was: one that did not fit does not come back as one that did', async () => {
+    const a = testApp({ pages, answers }); const c = addCompany(a, 'nofit.example', 'manual');
+    run(a.db, "update companies set status = 'disqualified' where id = ?", c.id);
+    dropCompany(a, 'nofit.example'); dropCompany(a, 'nofit.example');
+    expect(dropCompany(a, 'nofit.example', true).status).toBe('disqualified');
+    expect(one<any>(a.db, 'select status from companies').status).toBe('disqualified');
+  });
   it('keeps all the old emails if only a follow-up of the new ones fails', async () => {
     const { a, id } = await prepared(); await writeForCompany(a, id);
     const before = all<any>(a.db, 'select step, subject, body, delay_days from company_emails order by step');
@@ -383,6 +401,16 @@ describe('start says what is missing', () => {
     await start(a, { count: 1, out: out() }, () => {}, { checks: NOT_READY });
     expect(a.calls.filter((c: any) => c.name === 'research')).toHaveLength(1);
     expect(one<any>(a.db, 'select status, reasons from companies')).toMatchObject({ status: 'disqualified', reasons: expect.stringContaining('Nothing on its site could be quoted') });
+  });
+  it('a pack holds no live image, tag or formula from a scraped page', async () => {
+    const evil = '![x](https://tracker.example/p.png) <img src=x> we are hiring account executives in Austin';
+    const a = testApp({ pages: { ...pages, 'https://northwind.com/': { ...pages['https://northwind.com/'], text: evil } }, answers: { ...answers, research: { name: 'N', facts: [{ kind: 'hiring', text: 'Hiring', quote: evil, source_url: 'https://northwind.com/', published_at: null }], people: [] } } });
+    await learnProduct(a); await learnIcp(a, {}); const c = addCompany(a, 'northwind.com', 'manual'); await researchCompany(a, c.id); await writeForCompany(a, c.id);
+    run(a.db, "update companies set name = ' =HYPERLINK(1)'");
+    const dir = out(); buildPack(a, dir);
+    const md = readFileSync(join(dir, 'emails', 'northwind.com.md'), 'utf8');
+    expect(md).not.toMatch(/(^|[^\\])!\[/); expect(md).not.toContain('<img');
+    expect(readFileSync(join(dir, 'companies.csv'), 'utf8')).toContain("' =HYPERLINK(1)");
   });
   it('names what could not be read, and tries it again', async () => {
     const a = withSearch(testApp({ pages, answers }), ['northwind.com', 'unreachable.com']); const lines: string[] = [];
