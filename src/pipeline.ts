@@ -233,7 +233,7 @@ function lintSequence(a: App, seq: Written, facts: KnownFact[], domain: string) 
   return seq.emails.map((e, i) => lintEmail({ subject: e.subject, body: e.body, step: i + 1, claims: e.claims, facts, productFacts, allowedLinkDomains: [own, domain].filter(Boolean) }));
 }
 
-type Recipient = { domain: string; company: string | null; company_id: number; to: string };
+type Recipient = { domain: string; company: string | null; company_id: number; to: string; change?: { instruction: string; emails: Array<{ subject: string; body: string }> } };
 
 /** Three emails, by a model, then the rules, then a second reading. Refused, it gets one more try. Returned with its reasons either way. */
 async function compose(a: App, r: Recipient) {
@@ -247,7 +247,7 @@ async function compose(a: App, r: Recipient) {
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one line, asks one easy question. No meeting request. Follow-ups: under 60 words, each adds something new, the last one closes the loop politely.
 Only state what the facts say. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
-    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${feedback}`,
+    user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
   });
   // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.
@@ -319,6 +319,61 @@ export async function writeSequence(a: App, contactId: number) {
   } catch (e) { a.db.exec('rollback'); throw e; }
   logEvent(a.db, a.now(), 'sequence.written', { contact_id: contactId, blocked, reused: ready.length > 0 });
   return { contact_id: contactId, status: blocked ? 'blocked' : 'pending', issues: errors };
+}
+
+const companyByRef = (a: App, ref: string) => {
+  const d = normalizeDomain(ref);
+  const c = one<{ id: number; domain: string; name: string | null; status: string }>(a.db, 'select id, domain, name, status from companies where domain = ? or id = ?', d ?? '', /^\d+$/.test(ref) ? Number(ref) : -1);
+  if (!c) throw new Error(`No company ${ref}. See: outlevo companies list`);
+  return c;
+};
+
+/**
+ * Rewrites a company's emails as asked. The new ones go through every check the first ones did, and if they fail,
+ * the old ones stay. Approved emails go back to waiting for approval: what was approved is no longer what would go out.
+ */
+export async function rewriteEmails(a: App, ref: string, instruction: string) {
+  const c = companyByRef(a, ref);
+  if (c.status !== 'qualified') throw new Error(`${c.domain} is ${c.status}; only qualified companies have emails`);
+  if (one(a.db, "select 1 from drafts d join contacts p on p.id = d.contact_id where p.company_id = ? and d.status = 'sent'", c.id)) throw new Error(`Emails to ${c.domain} have already started, so they can no longer be rewritten`);
+  const draft = all<{ contact_id: number; subject: string; body: string }>(a.db, "select d.contact_id, d.subject, d.body from drafts d join contacts p on p.id = d.contact_id where p.company_id = ? and d.status in ('pending','approved','blocked') order by d.step", c.id);
+  const own = all<{ subject: string; body: string; to_title: string | null }>(a.db, 'select subject, body, to_title from company_emails where company_id = ? order by step', c.id);
+  const emails = draft.length ? draft : own;
+  if (!emails.length) throw new Error(`${c.domain} has no emails yet. Run: outlevo start, or outlevo write`);
+  const person = draft[0] ? one<{ first_name: string; last_name: string | null; title: string | null }>(a.db, 'select first_name, last_name, title from contacts where id = ?', draft[0].contact_id) : null;
+  const to = person ? `${person.first_name} ${person.last_name ?? ''}, ${person.title ?? 'job unknown'}` : own[0]?.to_title ?? getIcp(a)?.buyer_titles[0] ?? 'the person who owns this problem';
+  const w = await compose(a, { domain: c.domain, company: c.name, company_id: c.id, to, change: { instruction, emails } });
+  const errors = w.issues.flat().filter((x) => x.level === 'error');
+  if (w.blocked) { logEvent(a.db, a.now(), 'emails.rewrite_refused', { company_id: c.id }); return { domain: c.domain, rewritten: false, issues: errors, emails: [] as typeof w.emails }; }
+  a.db.exec('begin');
+  try {
+    if (draft[0]) {
+      run(a.db, "delete from drafts where contact_id = ? and status in ('pending','approved','blocked')", draft[0].contact_id);
+      w.emails.forEach((e, i) => run(a.db, `insert into drafts (contact_id, step, subject, body, claims, angle, delay_days, lint, status, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`, draft[0]!.contact_id, i + 1, e.subject, e.body, JSON.stringify(e.claims), w.seq.angle, delayOf(i, e.delay_days), JSON.stringify(w.issues[i] ?? []), iso(a)));
+    }
+    if (own.length) {
+      run(a.db, 'delete from company_emails where company_id = ?', c.id);
+      w.emails.forEach((e, i) => run(a.db, 'insert into company_emails (company_id, step, subject, body, claims, angle, delay_days, lint, blocked, to_title, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)', c.id, i + 1, e.subject, e.body, JSON.stringify(e.claims), w.seq.angle, delayOf(i, e.delay_days), JSON.stringify(w.issues[i] ?? []), own[0]?.to_title ?? null, iso(a)));
+    }
+    a.db.exec('commit');
+  } catch (e) { a.db.exec('rollback'); throw e; }
+  logEvent(a.db, a.now(), 'emails.rewritten', { company_id: c.id });
+  return { domain: c.domain, rewritten: true, issues: [] as LintIssue[], emails: w.emails };
+}
+
+/** Takes a company out of the pack and the queue. It stays known, so a later search does not bring it back. */
+export function dropCompany(a: App, ref: string, undo = false) {
+  const c = companyByRef(a, ref);
+  if (undo) {
+    if (c.status !== 'dropped') throw new Error(`${c.domain} is not dropped`);
+    run(a.db, "update companies set status = 'qualified' where id = ?", c.id);
+    logEvent(a.db, a.now(), 'company.restored', { company_id: c.id });
+    return { domain: c.domain, status: 'qualified' };
+  }
+  run(a.db, "update companies set status = 'dropped' where id = ?", c.id);
+  run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved','blocked') and contact_id in (select id from contacts where company_id = ?)", c.id);
+  logEvent(a.db, a.now(), 'company.dropped', { company_id: c.id });
+  return { domain: c.domain, status: 'dropped' };
 }
 
 /** Qualified companies with no emails yet and nobody to write to. */

@@ -11,7 +11,7 @@ import { all, one } from './db.js';
 import { hasErrors, lintEmail, parseEmailFile } from './lint.js';
 import { findContacts } from './contacts.js';
 import { cycle, runLoop } from './loop.js';
-import { addCompany, approve, discoverCompanies, getIcp, importCompanies, importContacts, learnIcp, learnProduct, nextToWrite, reject, researchCompany, reviewQueue, writeSequence } from './pipeline.js';
+import { addCompany, approve, discoverCompanies, dropCompany, rewriteEmails, getIcp, importCompanies, importContacts, learnIcp, learnProduct, nextToWrite, reject, researchCompany, reviewQueue, writeSequence } from './pipeline.js';
 import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
 import { buildPack } from './pack.js';
@@ -29,6 +29,8 @@ Start here
                                    Your sales pack: who to sell to, companies, emails. Sends nothing
                                    --count is how many companies to reach, as many as you like (20 if not given)
   pack [--out sales-pack]          Build the pack again from what is here
+  rewrite <company> "what to change"   Rewrite its emails. They go through every check again
+  drop <company> [--undo]          Take a company out of the pack and the queue
   start <another-site> --relearn   Switch this folder to another product
 Know your market
   product learn [URL]              Read your website
@@ -78,7 +80,7 @@ try {
 parsed = parseArgs({
   allowPositionals: true, strict: true,
   options: {
-    json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+    json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, undo: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
     website: { type: 'string' }, won: { type: 'string' }, lost: { type: 'string' }, brief: { type: 'string' }, like: { type: 'string' }, titles: { type: 'string' }, name: { type: 'string' },
     count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, out: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
   },
@@ -140,6 +142,21 @@ async function main() {
       const r = await start(a, { count: num(flags.count, 20), ...(flags.out ? { out: flags.out } : {}), ...(flags.won ? { won: flags.won } : {}), ...(flags.lost ? { lost: flags.lost } : {}), ...(flags.brief ? { brief: flags.brief } : {}) }, flags.json ? () => {} : (l) => console.log(l));
       if (flags.json) output(r);
       return;
+    }
+    case 'rewrite': {
+      const r = await rewriteEmails(a, need(sub, 'a company: outlevo rewrite northwind.com "shorter, please"'), need(arg, 'what to change: outlevo rewrite northwind.com "shorter, please"'));
+      if (!r.rewritten) {
+        output(r, `The new emails failed the checks, so the old ones stay:\n${r.issues.map((i) => `  ${i.message}`).join('\n')}`);
+        process.exitCode = 1;
+        return;
+      }
+      const p = buildPack(a, flags.out);
+      return output({ ...r, pack: p.index }, [...r.emails.map((e, i) => `${i + 1}. ${e.subject}\n${e.body}`), `\nUpdated: ${p.index}. If these were approved, they wait for your approval again.`].join('\n\n'));
+    }
+    case 'drop': {
+      const r = dropCompany(a, need(sub, 'a company: outlevo drop northwind.com'), !!flags.undo);
+      const p = buildPack(a, flags.out);
+      return output({ ...r, pack: p.index }, `${r.domain} is ${r.status === 'dropped' ? 'out of your pack and queue' : 'back: run outlevo pack after it has emails'}. Pack: ${p.companies} companies.`);
     }
     case 'pack': { const r = buildPack(a, flags.out); return output(r, `${r.companies} companies in ${r.index}${r.blocked ? `. ${r.blocked} left out: their emails failed the checks` : ''}`); }
     case 'meetings': {
