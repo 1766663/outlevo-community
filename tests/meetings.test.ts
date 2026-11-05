@@ -217,8 +217,18 @@ describe('findContacts', () => {
   it('leaves out anything Hunter does not call valid', async () => {
     const a = testApp(); a.secrets = { hunter_key: 'k' }; icpIn(a); qualified(a);
     const { doFetch } = hunterFake(people, () => 'accept_all');
-    expect(await findContacts(a, { limit: 5, doFetch })).toMatchObject({ added: 0, not_verified: 2 });
+    // the Office Manager is no buyer and not checked at all: only Dana, who is not valid
+    expect(await findContacts(a, { limit: 5, doFetch })).toMatchObject({ added: 0, not_verified: 1, no_buyer: 0 });
     expect(nextToWrite(a, 5)).toEqual([]);
+  });
+  it('writes to nobody when nobody there is in the buyer roles or leads the company', async () => {
+    const a = testApp(); a.secrets = { hunter_key: 'k' }; icpIn(a); qualified(a);
+    const { doFetch, urls } = hunterFake([{ value: 'cd@northwind.com', first_name: 'Cam', position: 'Creative Director', confidence: 99 }, { value: 'ceo@northwind.com', first_name: 'Ana', position: 'Co-Founder & CEO', confidence: 50 }], () => 'valid');
+    expect(await findContacts(a, { limit: 5, doFetch })).toMatchObject({ added: 1, no_buyer: 0 });
+    expect(all<any>(a.db, 'select email from contacts')).toEqual([{ email: 'ceo@northwind.com' }]);
+    const b = testApp(); b.secrets = { hunter_key: 'k' }; icpIn(b); qualified(b);
+    expect(await findContacts(b, { limit: 5, doFetch: hunterFake([{ value: 'cd@northwind.com', first_name: 'Cam', position: 'Creative Director', confidence: 99 }], () => 'valid').doFetch })).toMatchObject({ added: 0, no_buyer: 1 });
+    expect(urls.some((u) => u.includes('seniority=senior%2Cexecutive'))).toBe(true);
   });
   it('does not search the same company twice', async () => {
     const a = testApp(); a.secrets = { hunter_key: 'k' }; icpIn(a); qualified(a);

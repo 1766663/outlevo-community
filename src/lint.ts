@@ -95,6 +95,8 @@ export function lintEmail(i: LintInput): LintIssue[] {
     for (const inside of hostsInside(l.url)) if (!fits(inside)) add('error', 'link-domain', `A link hands on to ${inside}, which is neither your site nor the prospect's`);
   }
   if (!strict) {
+    // outlevo check knows neither your site nor theirs: it names each link, which a send allows only to those two.
+    for (const l of links) add('warning', 'check-link', `A link to ${hostOf(l.url) || l.url}: when Outlevo sends, an email may link only to your site or the prospect's`);
     // With no sources to hold it against, it can only point at the figures most often made up.
     for (const m of all.matchAll(/(?<![\w.])\d[\d,.]*\s?(%|x\b)/gi)) add('warning', 'check-number', `"${m[0].trim()}": is this true for this person? outlevo check has no sources to hold it against`);
     return out;

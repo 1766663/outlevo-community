@@ -23,7 +23,10 @@ const LV = 'https://api.lever.co/v0/postings/someone-else-entirely?mode=json&lim
 const json = {
   [GH]: { jobs: [
     { title: 'Senior Account Executive', absolute_url: 'https://boards.greenhouse.io/northwind/jobs/1', location: { name: 'Austin, TX' }, first_published: '2026-10-28T10:00:00Z' },
-    { title: 'Revenue Operations Manager', absolute_url: 'https://evil.example/phish', location: { name: 'Remote' }, updated_at: '2026-10-30T10:00:00Z' },
+    { title: 'Revenue Operations Manager', absolute_url: 'https://evil.example/phish', location: { name: 'Remote' }, first_published: '2026-10-30T10:00:00Z', updated_at: '2026-10-30T10:00:00Z' },
+    { title: 'Edited Old Role', absolute_url: 'https://boards.greenhouse.io/northwind/jobs/4', location: null, first_published: '2025-01-02T10:00:00Z', updated_at: '2026-11-01T10:00:00Z' },
+    { title: 'From The Future', absolute_url: 'https://boards.greenhouse.io/northwind/jobs/5', location: null, first_published: '2099-01-01T10:00:00Z' },
+    null,
     { title: 'Office Manager', absolute_url: 'https://boards.greenhouse.io/northwind/jobs/3', location: null, first_published: '2026-01-02T10:00:00Z' },
   ] },
   [LV]: [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/someone-else-entirely/9', createdAt: Date.parse('2026-11-01T00:00:00Z'), categories: { location: 'NYC' } }],
@@ -60,11 +63,15 @@ describe('hiring signals from job boards', () => {
     expect(boardsIn([page('https://x.com/', '', ['https://job-boards.greenhouse.io/embed/job_board?for=acme', 'https://jobs.ashbyhq.com/Acme/123', 'https://greenhouse.io/blog'])]))
       .toEqual([{ kind: 'greenhouse', token: 'acme' }, { kind: 'ashby', token: 'acme' }]);
     expect(boardApi({ kind: 'ashby', token: 'acme' })).toBe('https://api.ashbyhq.com/posting-api/job-board/acme');
+    expect(boardsIn([page('https://x.com/', '', ['https://job-boards.eu.greenhouse.io/acme/jobs/1', 'https://boards.greenhouse.io/embed/job_board/js?for=globex'])]))
+      .toEqual([{ kind: 'greenhouse', token: 'acme', eu: true }, { kind: 'greenhouse', token: 'globex' }]);
+    expect(boardsIn([page('https://x.com/', '', ['https://jobs.lever.co/acme./'])])).toEqual([]);
+    expect(boardApi({ kind: 'greenhouse', token: 'acme', eu: true })).toBe('https://boards-api.eu.greenhouse.io/v1/boards/acme/jobs');
   });
 
   it('reads each board\'s shape; a link off the board or the company\'s site becomes the board\'s page; old postings drop out', () => {
     const gh = parseBoard({ kind: 'greenhouse', token: 'northwind' }, json[GH], 'northwind.com');
-    expect(gh.map((p) => p.url)).toEqual(['https://boards.greenhouse.io/northwind/jobs/1', 'https://boards.greenhouse.io/northwind', 'https://boards.greenhouse.io/northwind/jobs/3']);
+    expect(gh.map((p) => p.url)).toEqual(['https://boards.greenhouse.io/northwind/jobs/1', 'https://boards.greenhouse.io/northwind', 'https://boards.greenhouse.io/northwind/jobs/4', 'https://boards.greenhouse.io/northwind/jobs/5', 'https://boards.greenhouse.io/northwind/jobs/3']);
     expect(freshPostings(gh, TUESDAY_NOON).map((p) => p.title)).toEqual(['Revenue Operations Manager', 'Senior Account Executive']);
     expect(parseBoard({ kind: 'lever', token: 'x' }, json[LV], 'x.com')[0]).toMatchObject({ title: 'Account Executive', location: 'NYC', posted_at: '2026-11-01' });
     expect(parseBoard({ kind: 'ashby', token: 'a' }, { jobs: [{ title: 'Head of Sales‮', jobUrl: 'https://jobs.ashbyhq.com/a/1', location: 'Berlin', publishedAt: '2026-10-20' }] }, 'a.com')[0])
@@ -74,7 +81,9 @@ describe('hiring signals from job boards', () => {
 
   it('become dated facts the company is qualified and written on, with the posting as the source', async () => {
     const { a, r } = await researched();
-    expect(r).toMatchObject({ status: 'qualified', jobs: 3 });
+    // Lever's someone-else-entirely is linked from their careers page but is not their board: left out
+    expect(r).toMatchObject({ status: 'qualified', jobs: 2 });
+    expect(all<any>(a.db, "select data from events where kind = 'company.job_board_skipped'").map((e) => JSON.parse(e.data).token)).toEqual(['someone-else-entirely']);
     const facts = all<any>(a.db, "select text, quote, source_url, published_at from facts where kind = 'hiring' order by id");
     expect(facts).toContainEqual({ text: 'Hiring: Senior Account Executive (Austin, TX)', quote: 'Senior Account Executive', source_url: 'https://boards.greenhouse.io/northwind/jobs/1', published_at: '2026-10-28' });
     expect(facts.map((f) => f.quote)).not.toContain('Office Manager');
@@ -102,24 +111,30 @@ describe('LinkedIn notes to send by hand', () => {
     expect(html).toContain(DONE_FOR_YOU_URL);
   });
 
-  it('a note that breaks a rule is left out, and never holds back the emails', async () => {
-    for (const bad of [
-      { ...GOOD_LI, note: `${GOOD_LI.note} ${'More words here. '.repeat(20)}` },
-      { ...GOOD_LI, message: 'Thanks for connecting. I emailed you about this last week, did you see it?' },
-      { ...GOOD_LI, note: 'Hi, saw you are hiring a Senior Account Executive. See acme-tools.com/ramp for how we help.' },
-      { ...GOOD_LI, message: 'Thanks for connecting. Teams like yours cut ramp time by 40% with us. Worth a chat?' },
-    ]) {
+  it('a note that breaks a rule is left out, a follow-up that does is dropped alone, and neither holds back the emails', async () => {
+    const cases: Array<[Record<string, string>, 'none' | 'note only']> = [
+      [{ ...GOOD_LI, note: `${GOOD_LI.note} ${'More words here. '.repeat(20)}` }, 'none'],
+      [{ ...GOOD_LI, note: 'Hi, saw you are hiring a Senior Account Executive. See acme-tools.com/ramp for how we help.' }, 'none'],
+      [{ ...GOOD_LI, note: 'Following up on my last email: saw you are hiring a Senior Account Executive.' }, 'none'],
+      [{ ...GOOD_LI, message: 'Thanks for connecting. I emailed you about this last week, did you see it?' }, 'note only'],
+      [{ ...GOOD_LI, message: 'Thanks for connecting. Teams like yours cut ramp time by 40% with us. Worth a chat?' }, 'note only'],
+      // naming a company by its domain is a name, not a link; saying what you sell is about email is not a claim of contact
+      [{ ...GOOD_LI, message: 'Thanks for connecting. Northwind.com and acme-tools.com both care about email outreach that ramps reps. How do you handle it?' }, 'note and message' as never],
+    ];
+    for (const [bad, want] of cases) {
       const { a, c } = await researched(bad);
-      const w = await writeForCompany(a, c.id);
-      expect(w.status).toBe('ready');
-      expect(all(a.db, 'select 1 from linkedin_notes')).toHaveLength(0);
+      expect((await writeForCompany(a, c.id)).status).toBe('ready');
+      const row = all<{ note: string; message: string }>(a.db, 'select note, message from linkedin_notes')[0];
+      if (want === 'none') expect(row, bad.note).toBeUndefined();
+      else if (want === 'note only') expect(row, bad.message).toEqual({ note: GOOD_LI.note, message: '' });
+      else expect(row).toEqual({ note: GOOD_LI.note, message: bad.message });
     }
   });
 
   it('a rewrite replaces them, or removes them when the new ones fail', async () => {
     const { a, c } = await researched();
     await writeForCompany(a, c.id);
-    a.model = () => ({ json: async (r: any) => (r.name === 'write' ? write({ ...GOOD_LI, message: 'I emailed you, any thoughts?' })(r) : { unsupported: [] }) }) as any;
+    a.model = () => ({ json: async (r: any) => (r.name === 'write' ? write({ ...GOOD_LI, note: 'As I mentioned in my email, hi.' })(r) : { unsupported: [] }) }) as any;
     expect((await rewriteEmails(a, 'northwind.com', 'shorter')).rewritten).toBe(true);
     expect(all(a.db, 'select 1 from linkedin_notes')).toHaveLength(0);
   });
@@ -145,20 +160,29 @@ describe('funding signals from Form D', () => {
     expect(legalName('Northwind')).toBe('northwind');
     expect(legalName('Northwind Capital Fund I, L.P.')).not.toBe('northwind');
     expect(legalName('Northwind Holdings Inc.')).not.toBe('northwind');
+    expect(legalName('Ünïcode SA')).toBe('ünïcode');
+    const t = Date.now(); legalName('('.repeat(60_000)); legalName(' tech'.repeat(40_000)); expect(Date.now() - t).toBeLessThan(200);
   });
 
   it('counts a filing only when its ZIP code or phone is on the company\'s own pages', () => {
     const f = parseFormD(FORM_D('Northwind, Inc.', '78701', '512-555-0100'), '1719932', '0001719932-26-000001', '2026-10-15')!;
     expect(f).toMatchObject({ entity: 'Northwind, Inc.', zip: '78701', phone: '5125550100', sold: 2500000, offered: 5000000, first_sale: '2026-09-30' });
     expect(onTheirSite(f, site)).toBe(true);
-    expect(onTheirSite({ zip: '94104', phone: '4158053000' }, site)).toBe(false);
-    expect(onTheirSite({ zip: '94104', phone: '5125550100' }, site)).toBe(true);
+    const at = (zip: string, phone: string, city = 'Austin', state = 'TX') => ({ zip, phone, city, state });
+    expect(onTheirSite(at('94104', '4158053000', 'San Francisco', 'CA'), site)).toBe(false);
+    // a phone counts only with the filing's city on the pages too: filing agents share their phones
+    expect(onTheirSite(at('94104', '5125550100', 'San Francisco', 'CA'), site)).toBe(false);
+    expect(onTheirSite(at('99999', '5125550100', 'Austin', 'XX'), site)).toBe(true);
+    // a bare ZIP or loose digits elsewhere on a page are no address
+    expect(onTheirSite(at('78701', '0000000000', 'Dallas', 'NY'), site)).toBe(false);
+    expect(onTheirSite(at('55555', '5125550100'), [page('https://x.com/', 'Order 51255 then 50100. Our customer at 55555.')])).toBe(false);
   });
 
   it('becomes one dated fact with the filing\'s amount as its quote; a fund, another name or another address gives none', async () => {
     const ok = '0001719932-26-000001';
     const a = testApp({ json: { [efts('Northwind')]: { hits: { hits: [hit('Northwind Capital Fund I, L.P.', '0001719932-26-000009'), hit('Northwind, Inc.', ok)] } } }, text: { [doc(ok)]: FORM_D('Northwind, Inc.', '78701', '512-555-0100') } });
-    expect(await fundingFacts(a, 'Northwind', site)).toEqual([{ kind: 'funding', published_at: '2026-10-15', quote: 'Total Amount Sold $2,500,000',
+    expect(await fundingFacts(a, 'Northwind', site, 'globex.com')).toEqual([]);
+    expect(await fundingFacts(a, 'Northwind', site, 'northwind.com')).toEqual([{ kind: 'funding', published_at: '2026-10-15', quote: 'Total Amount Sold $2,500,000',
       text: 'Raised money privately: a Form D filed 2026-10-15, $2,500,000 sold so far, first sale 2026-09-30', source_url: 'https://www.sec.gov/Archives/edgar/data/1719932/000171993226000001/xslFormDX01/primary_doc.xml' }]);
     const elsewhere = testApp({ json: { [efts('Northwind')]: { hits: { hits: [hit('Northwind, Inc.', ok)] } } }, text: { [doc(ok)]: FORM_D('Northwind, Inc.', '10001', '212-555-0199') } });
     expect(await fundingFacts(elsewhere, 'Northwind', site)).toEqual([]);
@@ -200,10 +224,20 @@ describe('posts you bring', () => {
     expect(c.status).toBe('qualified');
     expect(all<any>(a.db, "select text, quote, source_url, published_at from facts where kind = 'post'")).toEqual([{ text: `Jordan Lee, Controller, wrote in a post: "${POST}"`, quote: POST, source_url: 'https://www.linkedin.com/posts/jordan-1', published_at: '2026-11-02' }]);
     await writeForCompany(a, 1);
-    expect(a.calls.findLast((x) => x.name === 'write')!.user).toContain('To: Jordan Lee, Controller (wrote the post the first email opens on)');
+    expect(a.calls.findLast((x) => x.name === 'write')!.user).toContain('Jordan Lee, Controller (wrote the post the first email opens on), at');
     expect(all<any>(a.db, 'select to_title from company_emails')[0].to_title).toMatch(/^Jordan Lee, Controller/);
     // research again keeps the post
     await researchCompany(a, 1);
     expect(all(a.db, "select 1 from facts where kind = 'post'")).toHaveLength(1);
+  });
+});
+
+import { boardUrls, structuredAddress } from '../src/fetcher.js';
+describe('what a page hides in its scripts', () => {
+  it('finds board URLs in raw HTML and JSON, and an address in JSON-LD', () => {
+    const html = `<script>{"jobs":"https:\\/\\/jobs.ashbyhq.com\\/ramp\\/123","x":"https://boards.greenhouse.io/vercel"}</script><script type="application/ld+json">{"address":{"addressLocality":"San Francisco","addressRegion":"CA","postalCode":"94104"},"telephone":"+1 415-805-3000"}</script>`;
+    expect(boardUrls(html)).toEqual(['https://jobs.ashbyhq.com/ramp/123', 'https://boards.greenhouse.io/vercel']);
+    expect(structuredAddress(html)).toBe('\nSan Francisco, CA 94104\nPhone +1 415-805-3000');
+    expect(onTheirSite({ zip: '94104', phone: null, city: 'San Francisco', state: 'CA' }, [page('https://mercury.com/', `Mercury${structuredAddress(html)}`)])).toBe(true);
   });
 });

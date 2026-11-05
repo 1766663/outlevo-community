@@ -14,7 +14,10 @@ const webUrl = (u: string) => { try { const x = new URL(u); return x.protocol ==
 const csvCell = (v: unknown) => { const s = /^\s*[=+\-@]/.test(String(v ?? '')) ? `'${v}` : String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s; };
 
 // Scraped text ends up in these files, and a Markdown viewer would load an image, run a tag or dress up a link in it. Only a plain <address> stays.
-const inertMd = (md: string) => md.replace(/!\[/g, '!\\[').replace(/\]\(/g, ']\\(').replace(/<(?![^\s<>@]+@[^\s<>@]+>)/g, '&lt;');
+// An autolink like <http://x/@a> is not an address: only a bare <name@host> with no / : or ? is kept.
+const inertMd = (md: string) => md.replace(/!\[/g, '!\\[').replace(/\]\(/g, ']\\(').replace(/<(?![^\s<>@/:?]+@[^\s<>@/:?]+>)/g, '&lt;');
+/** A quote on one line: a line break inside one could start a Markdown link definition of its own. */
+const oneLine = (s: string | null | undefined) => String(s ?? '').replace(/\s+/g, ' ').trim();
 
 type Email = { step: number; sent: boolean; subject: string; body: string; delay_days: number; claims: Array<{ text: string; source: { quote: string; source_url: string } | null }> };
 type Linkedin = { note: string; message: string; sources: Array<{ text: string; source: { quote: string; source_url: string } | null }> };
@@ -31,7 +34,7 @@ export function packData(a: App): PackCompany[] {
     const li = one<{ note: string; message: string; claims: string }>(a.db, 'select note, message, claims from linkedin_notes where company_id = ?', c.id);
     return {
       linkedin: li ? { note: li.note, message: li.message, sources: withSources(li.claims) } : null,
-      id: c.id, domain: c.domain, name: c.name, score: c.score, why: (JSON.parse(c.reasons ?? '{}').reasons ?? []).map((r: { text: string }) => r.text),
+      id: c.id, domain: c.domain, name: c.name, score: c.score, why: (JSON.parse(c.reasons ?? '{}').reasons ?? []).map((r: { text: string }) => r.text.trim().replace(/[.;]+$/, '')),
       to: person ? `${person.first_name} ${person.last_name ?? ''}`.trim() + (person.title ? `, ${person.title}` : '') : own[0]?.to_title ?? '',
       person: person ? `${person.first_name} ${person.last_name ?? ''}`.trim() : null, email: person?.email ?? null,
       blocked: rows.some((r) => r.status === 'blocked' || r.blocked === 1),
@@ -42,7 +45,7 @@ export function packData(a: App): PackCompany[] {
 
 function emailMd(c: PackCompany) {
   const head = [`# ${c.name ?? c.domain}`, '', `Website: https://${c.domain}`, `Write to: ${c.to || 'the person who owns this problem'}${c.email ? ` <${c.email}>` : ''}`, ...(c.why.length ? ['', `Why this company: ${c.why.join('; ')}`] : [])];
-  const mails = c.emails.map((e) => [`## ${e.step === 1 ? 'First email' : `Follow-up ${e.step - 1}, after ${e.delay_days} days`}${e.sent ? ' (already sent)' : ''}`, '', `Subject: ${e.subject}`, '', e.body, ...(e.claims.length ? ['', 'Sources:', ...e.claims.map((x) => `- "${x.source?.quote ?? x.text}" ${x.source?.source_url ?? ''}`)] : [])].join('\n'));
+  const mails = c.emails.map((e) => [`## ${e.step === 1 ? 'First email' : `Follow-up ${e.step - 1}, after ${e.delay_days} days`}${e.sent ? ' (already sent)' : ''}`, '', `Subject: ${e.subject}`, '', e.body, ...(e.claims.length ? ['', 'Sources:', ...e.claims.map((x) => `- "${oneLine(x.source?.quote ?? x.text)}" ${oneLine(x.source?.source_url)}`)] : [])].join('\n'));
   return [...head, '', ...mails.flatMap((m) => [m, ''])].join('\n');
 }
 
@@ -56,8 +59,8 @@ function linkedinMd(ready: PackCompany[]) {
     '- **LinkedIn first.** Send the note today. If they accept, send the follow-up; if they do not reply within a few days, send the first email.',
     '- **Email first.** Send the first email, then the note a few days later, saying nothing about the email.', '',
     'A note can be up to 300 characters on a paid LinkedIn account, 200 on a free one. Find the person by the title under "Write to".', '',
-    ...with_.flatMap((c) => [`## ${c.name ?? c.domain}`, '', `Write to: ${c.to || 'the person who owns this problem'}`, '', '**Connection note**', '', c.linkedin!.note, '', '**After they accept**', '', c.linkedin!.message, '',
-      ...(c.linkedin!.sources.length ? ['Sources:', ...c.linkedin!.sources.map((x) => `- "${x.source?.quote ?? x.text}" ${x.source?.source_url ?? ''}`), ''] : [])]),
+    ...with_.flatMap((c) => [`## ${c.name ?? c.domain}`, '', `Write to: ${c.to || 'the person who owns this problem'}`, '', '**Connection note**', '', c.linkedin!.note, '', ...(c.linkedin!.message ? ['**After they accept**', '', c.linkedin!.message, ''] : []),
+      ...(c.linkedin!.sources.length ? ['Sources:', ...c.linkedin!.sources.map((x) => `- "${oneLine(x.source?.quote ?? x.text)}" ${oneLine(x.source?.source_url)}`), ''] : [])]),
     ...(with_.length ? [] : ['No LinkedIn notes passed the checks this time. The emails are in emails/.', '']),
   ].join('\n');
 }
@@ -73,7 +76,7 @@ function page(a: App, ready: PackCompany[], left: Left) {
     const src = (e: Email) => e.claims.map((x) => { const u = x.source ? webUrl(x.source.source_url) : null; return `<p class="src">“${esc(x.source?.quote ?? x.text)}”${u ? ` <a href="${esc(u)}" rel="noopener noreferrer">source</a>` : ''}</p>`; }).join('');
     const sent = (e: Email) => e.sent ? ' <span class="sent">already sent</span>' : '';
     const later = c.emails.slice(1).map((e) => `<details><summary>Follow-up ${e.step - 1}, after ${esc(e.delay_days)} days${sent(e)}</summary><p class="subj">${esc(e.subject)}</p><p class="body">${esc(e.body)}</p>${src(e)}</details>`).join('')
-      + (c.linkedin ? `<details><summary>LinkedIn, to send by hand</summary><p class="subj">Connection note</p><p class="body">${esc(c.linkedin.note)}</p><p class="subj">After they accept</p><p class="body">${esc(c.linkedin.message)}</p>${src({ claims: c.linkedin.sources } as Email)}</details>` : '');
+      + (c.linkedin ? `<details><summary>LinkedIn, to send by hand</summary><p class="subj">Connection note</p><p class="body">${esc(c.linkedin.note)}</p>${c.linkedin.message ? `<p class="subj">After they accept</p><p class="body">${esc(c.linkedin.message)}</p>` : ''}${src({ claims: c.linkedin.sources } as Email)}</details>` : '');
     return `<article><h3>${esc(c.name ?? c.domain)} <span class="to">write to ${esc(c.to || 'the person who owns this')}${c.email ? ` · ${esc(c.email)}` : ''}</span></h3>${c.why.length ? `<p class="why">${esc(c.why.join(' · '))}</p>` : ''}${first ? `<p class="subj">${esc(first.subject)}${sent(first)}</p><p class="body">${esc(first.body)}</p>${src(first)}` : ''}${later}</article>`;
   }).join('\n');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>Your sales pack</title><style>

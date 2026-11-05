@@ -50,7 +50,7 @@ their first accounts. Who owns ramp for them?
 - **LinkedIn too, by hand.** With the emails, from the same quotes and held to the same checks, it writes a connection note and a follow-up for each company. A note that fails is left out and never holds back the emails. It never says "I emailed you", so it can go first.
 - **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
-- **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
+- **It goes all the way to the meeting.** A reply that says it is interested gets a drafted answer with your booking link; a question gets a drafted answer to the question. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
 - **Nothing sends without you.** Every sequence waits for your approval. The answers it drafts to replies wait too. Community has no autopilot.
 - **Safe by default.** See [The rules it will not break](#the-rules-it-will-not-break).
 

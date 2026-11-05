@@ -17,6 +17,8 @@ async function hunter<T>(path: string, params: Record<string, string>, key: stri
 }
 
 /** The best-fitting person at each qualified company with nobody to write to. Only an address Hunter calls valid is kept, and a guess never is. */
+const LEADER = /\b(founder|co-?founder|ceo|chief executive|owner|president|managing director|managing partner|general manager)\b/i;
+
 export async function findContacts(a: App, opts: { limit: number; doFetch?: typeof fetch }) {
   const key = a.secrets.hunter_key;
   if (!key) throw new Error('Set HUNTER_API_KEY to find contacts with your own Hunter account, import a CSV, or use outlevo cloud contacts.');
@@ -32,13 +34,15 @@ export async function findContacts(a: App, opts: { limit: number; doFetch?: type
     and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))
     and not exists (select 1 from events e where e.kind = 'contacts.searched' and e.data = json_object('company_id', c.id))
     order by coalesce(c.score, 0) desc limit ?`, opts.limit);
-  let added = 0; let notVerified = 0; let looked = 0; let outOfLookups = false;
+  let added = 0; let notVerified = 0; let looked = 0; let outOfLookups = false; let noBuyer = 0;
   for (const c of companies) {
     if (!spend()) break;
     looked++;
-    const found = await hunter<{ data?: { emails?: HunterEmail[] } }>('/domain-search', { domain: c.domain, type: 'personal', limit: '10' }, key, doFetch);
-    const people = (found.data?.emails ?? []).filter((e) => e.value && e.first_name && addressFits(a, e.value, c.domain))
+    const found = await hunter<{ data?: { emails?: HunterEmail[] } }>('/domain-search', { domain: c.domain, type: 'personal', limit: '10', seniority: 'senior,executive' }, key, doFetch);
+    // Only someone in the ICP's buyer roles, or who leads the company: a Creative Director is no one to write to about sales.
+    const people = (found.data?.emails ?? []).filter((e) => e.value && e.first_name && addressFits(a, e.value, c.domain) && (titleFit(e.position ?? null, buyers) > 0 || LEADER.test(e.position ?? '')))
       .sort((x, y) => titleFit(y.position ?? null, buyers) - titleFit(x.position ?? null, buyers) || (y.confidence ?? 0) - (x.confidence ?? 0)).slice(0, 3);
+    if (!people.length) noBuyer++;
     for (const p of people) {
       if (!spend()) { outOfLookups = true; break; }
       const v = await hunter<{ data?: { status?: string } }>('/email-verifier', { email: p.value! }, key, doFetch);
@@ -50,8 +54,8 @@ export async function findContacts(a: App, opts: { limit: number; doFetch?: type
     if (outOfLookups) break;
     logEvent(a.db, a.now(), 'contacts.searched', { company_id: c.id });
   }
-  logEvent(a.db, a.now(), 'contacts.found', { companies: looked, added, not_verified: notVerified });
+  logEvent(a.db, a.now(), 'contacts.found', { companies: looked, added, not_verified: notVerified, no_buyer: noBuyer });
   const waiting = one<{ n: number }>(a.db, `select count(*) as n from companies c where c.status = 'qualified'
     and not exists (select 1 from contacts p where p.company_id = c.id and p.status = 'active' and p.email_source in ('imported','published','verified'))`)?.n ?? 0;
-  return { companies: looked, added, not_verified: notVerified, waiting };
+  return { companies: looked, added, not_verified: notVerified, no_buyer: noBuyer, waiting };
 }

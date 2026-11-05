@@ -43,9 +43,14 @@ export function postFacts(a: App, companyId: number) {
 }
 
 /** The person a company's emails go to when a post of theirs is the reason: "Jordan Lee, Controller". */
+export const POST_AUTHOR_MARK = '(wrote the post the first email opens on)';
+/** Whose post: the author we can write to (a contact by that name) first, else the first post brought. */
+export const postAuthorRow = (a: App, companyId: number) => one<{ name: string; title: string | null }>(a.db,
+  `select b.name, b.title from brought_signals b where b.company_id = ?
+    order by exists (select 1 from contacts p where p.company_id = b.company_id and p.status = 'active' and lower(trim(p.first_name || ' ' || coalesce(p.last_name, ''))) = lower(b.name)) desc, b.id limit 1`, companyId);
 export const postAuthor = (a: App, companyId: number) => {
-  const p = one<{ name: string; title: string | null }>(a.db, 'select name, title from brought_signals where company_id = ? order by id limit 1', companyId);
-  return p ? `${p.name}, ${p.title ?? 'job unknown'} (wrote the post the first email opens on)` : null;
+  const p = postAuthorRow(a, companyId);
+  return p ? `${p.name}, ${p.title ?? 'job unknown'} ${POST_AUTHOR_MARK}` : null;
 };
 
 /**

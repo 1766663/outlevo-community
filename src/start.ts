@@ -72,7 +72,7 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
     for (let pass = 0; pass < SEARCH_PASSES; pass++) {
       const short = o.count - (one<{ n: number }>(a.db, "select count(*) as n from companies where status in ('new', 'qualified')")?.n ?? 0);
       if (short <= 0) break;
-      say(`Looking for ${short} ${short === 1 ? 'company' : 'companies'} that fit…`);
+      say(`Looking for ${short} ${short === 1 ? 'company that fits' : 'companies that fit'}…`);
       let added: string[] = []; let failed = false;
       try { added = (await discoverCompanies(a, short, o.brief)).added; say(`  Found ${added.length}${added.length ? `: ${added.join(', ')}` : ''}.`); } catch (e) { say(`  ${stopped(e)}`); failed = true; }
       // A search that failed can still have saved what the others found.
@@ -81,7 +81,7 @@ export async function start(a: App, o: StartOptions, say: (line: string) => void
     }
     if (a.secrets.hunter_key) {
       say('Finding the right person at each company with your Hunter key…');
-      try { const r = await findContacts(a, { limit: UNLIMITED }); say(`  ${r.added} verified, ${r.not_verified} not verified and left out.`); }
+      try { const r = await findContacts(a, { limit: UNLIMITED }); say(`  ${r.added} verified, ${r.not_verified} not verified and left out${r.no_buyer ? `, ${r.no_buyer} with nobody in your buyer roles` : ''}.`); }
       catch (e) { if (!(e instanceof HunterRefused)) stopped(e); say(`  ${(e as Error).message}`); }
     }
     const people = nextToWrite(a, UNLIMITED); const nobody = companiesToWrite(a, UNLIMITED);
