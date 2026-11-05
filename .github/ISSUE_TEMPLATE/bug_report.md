@@ -18,4 +18,4 @@ outlevo ...
 - `node --version`:
 - Operating system:
 
-**Before you post:** take out email addresses, API keys, reply text and anything else from `.outlevo/`. A vulnerability goes to [SECURITY.md](https://github.com/1766663/outlevo-community/blob/main/SECURITY.md), not here.
+**Before you post:** take out email addresses, API keys, reply text and anything else from `.outlevo/`. A vulnerability goes to [SECURITY.md](https://github.com/Outlevo/outlevo-community/blob/main/SECURITY.md), not here.

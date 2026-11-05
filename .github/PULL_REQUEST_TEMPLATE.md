@@ -9,6 +9,6 @@
 
 ## Contribution terms
 
-First pull request? Write this line, as [CONTRIBUTING.md](https://github.com/1766663/outlevo-community/blob/main/CONTRIBUTING.md) asks:
+First pull request? Write this line, as [CONTRIBUTING.md](https://github.com/Outlevo/outlevo-community/blob/main/CONTRIBUTING.md) asks:
 
 > I agree to the contribution terms in CONTRIBUTING.md.

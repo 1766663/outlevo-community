@@ -18,15 +18,15 @@
   ·
   <a href="CHANGELOG.md">Changelog</a>
   ·
-  <a href="https://github.com/1766663/outlevo-community/issues">Issues</a>
+  <a href="https://github.com/Outlevo/outlevo-community/issues">Issues</a>
   ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-purple" alt="License: AGPLv3"></a>
-  <a href="https://github.com/1766663/outlevo-community/actions/workflows/ci.yml"><img src="https://github.com/1766663/outlevo-community/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/1766663/outlevo-community/releases"><img src="https://img.shields.io/github/v/release/1766663/outlevo-community?label=release" alt="Latest release"></a>
+  <a href="https://github.com/Outlevo/outlevo-community/actions/workflows/ci.yml"><img src="https://github.com/Outlevo/outlevo-community/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Outlevo/outlevo-community/releases"><img src="https://img.shields.io/github/v/release/Outlevo/outlevo-community?label=release" alt="Latest release"></a>
 </p>
 
 **Install it, give it your website, get your sales pack: who to sell to, companies that fit, and emails ready to send, each built on a quote from that company's own site.**
@@ -116,7 +116,7 @@ outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person la
 You need Node 22.13 or newer and an Anthropic API key.
 
 ```bash
-git clone https://github.com/1766663/outlevo-community.git && cd outlevo-community
+git clone https://github.com/Outlevo/outlevo-community.git && cd outlevo-community
 npm install && npm run build && npm link
 
 mkdir my-outbound && cd my-outbound
@@ -237,7 +237,7 @@ Built with TypeScript on Node.js and its built-in SQLite, with Anthropic's model
 
 ## Contact
 
-Cloud and sales: hello@notify.outlevo.com. Vulnerabilities: [SECURITY.md](SECURITY.md). Everything else: [GitHub Issues](https://github.com/1766663/outlevo-community/issues).
+Cloud and sales: hello@notify.outlevo.com. Vulnerabilities: [SECURITY.md](SECURITY.md). Everything else: [GitHub Issues](https://github.com/Outlevo/outlevo-community/issues).
 
 ## License
 

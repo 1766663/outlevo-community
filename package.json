@@ -17,10 +17,10 @@
   "homepage": "https://outlevo.com/?utm_source=community&utm_medium=npm",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/1766663/outlevo-community.git"
+    "url": "git+https://github.com/Outlevo/outlevo-community.git"
   },
   "bugs": {
-    "url": "https://github.com/1766663/outlevo-community/issues"
+    "url": "https://github.com/Outlevo/outlevo-community/issues"
   },
   "license": "AGPL-3.0-only",
   "type": "module",
