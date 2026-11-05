@@ -124,3 +124,86 @@ describe('LinkedIn notes to send by hand', () => {
     expect(all(a.db, 'select 1 from linkedin_notes')).toHaveLength(0);
   });
 });
+
+// Form D funding signals (SEC EDGAR) and posts you bring.
+import { fundingFacts, legalName, onTheirSite, parseFormD } from '../src/funding.js';
+import { excerpt, importSignals } from '../src/brought.js';
+import { writeFileSync } from 'node:fs';
+
+const FORM_D = (name: string, zip: string, phone: string, sold = '2500000', industry = 'Other Technology') => `<edgarSubmission><primaryIssuer><cik>0001719932</cik><entityName>${name}</entityName>
+<issuerAddress><street1>1 Main St</street1><city>Austin</city><stateOrCountry>TX</stateOrCountry><zipCode>${zip}</zipCode></issuerAddress><issuerPhoneNumber>${phone}</issuerPhoneNumber></primaryIssuer>
+<offeringData><industryGroup><industryGroupType>${industry}</industryGroupType></industryGroup><typeOfFiling><dateOfFirstSale><value>2026-09-30</value></dateOfFirstSale></typeOfFiling>
+<offeringSalesAmounts><totalOfferingAmount>5000000</totalOfferingAmount><totalAmountSold>${sold}</totalAmountSold></offeringSalesAmounts></offeringData></edgarSubmission>`;
+const hit = (name: string, adsh: string, filed = '2026-10-15') => ({ _source: { display_names: [`${name}  (CIK 0001719932)`], ciks: ['0001719932'], adsh, file_date: filed } });
+const efts = (name: string) => `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${name}"`)}&forms=D&dateRange=custom&startdt=2026-05-07&enddt=2026-11-03`;
+const doc = (adsh: string) => `https://www.sec.gov/Archives/edgar/data/1719932/${adsh.replace(/-/g, '')}/primary_doc.xml`;
+const site = [page('https://northwind.com/', 'Northwind, 1 Main St, Austin, TX 78701. Call (512) 555-0100.')];
+
+describe('funding signals from Form D', () => {
+  it('names match without the legal form, a ticker, or a generic tail; other names do not', () => {
+    expect(legalName('Northwind Technologies, Inc.  (NWTX)  (CIK 0001)')).toBe('northwind');
+    expect(legalName('Northwind')).toBe('northwind');
+    expect(legalName('Northwind Capital Fund I, L.P.')).not.toBe('northwind');
+    expect(legalName('Northwind Holdings Inc.')).not.toBe('northwind');
+  });
+
+  it('counts a filing only when its ZIP code or phone is on the company\'s own pages', () => {
+    const f = parseFormD(FORM_D('Northwind, Inc.', '78701', '512-555-0100'), '1719932', '0001719932-26-000001', '2026-10-15')!;
+    expect(f).toMatchObject({ entity: 'Northwind, Inc.', zip: '78701', phone: '5125550100', sold: 2500000, offered: 5000000, first_sale: '2026-09-30' });
+    expect(onTheirSite(f, site)).toBe(true);
+    expect(onTheirSite({ zip: '94104', phone: '4158053000' }, site)).toBe(false);
+    expect(onTheirSite({ zip: '94104', phone: '5125550100' }, site)).toBe(true);
+  });
+
+  it('becomes one dated fact with the filing\'s amount as its quote; a fund, another name or another address gives none', async () => {
+    const ok = '0001719932-26-000001';
+    const a = testApp({ json: { [efts('Northwind')]: { hits: { hits: [hit('Northwind Capital Fund I, L.P.', '0001719932-26-000009'), hit('Northwind, Inc.', ok)] } } }, text: { [doc(ok)]: FORM_D('Northwind, Inc.', '78701', '512-555-0100') } });
+    expect(await fundingFacts(a, 'Northwind', site)).toEqual([{ kind: 'funding', published_at: '2026-10-15', quote: 'Total Amount Sold $2,500,000',
+      text: 'Raised money privately: a Form D filed 2026-10-15, $2,500,000 sold so far, first sale 2026-09-30', source_url: 'https://www.sec.gov/Archives/edgar/data/1719932/000171993226000001/xslFormDX01/primary_doc.xml' }]);
+    const elsewhere = testApp({ json: { [efts('Northwind')]: { hits: { hits: [hit('Northwind, Inc.', ok)] } } }, text: { [doc(ok)]: FORM_D('Northwind, Inc.', '10001', '212-555-0199') } });
+    expect(await fundingFacts(elsewhere, 'Northwind', site)).toEqual([]);
+    expect(all(elsewhere.db, "select kind from events")).toEqual([{ kind: 'company.form_d_unmatched' }]);
+    const fund = testApp({ json: { [efts('Northwind')]: { hits: { hits: [hit('Northwind, Inc.', ok)] } } }, text: { [doc(ok)]: FORM_D('Northwind, Inc.', '78701', '512-555-0100', '0', 'Pooled Investment Fund') } });
+    expect(await fundingFacts(fund, 'Northwind', site)).toEqual([]);
+    expect(await fundingFacts(testApp({}), 'NW', site)).toEqual([]);
+  });
+
+  it('can be turned off', async () => {
+    const a = testApp({ pages, json, answers: answers(null), config: { signals: { job_boards: false, sec_form_d: false } } as any });
+    await learnProduct(a); await learnIcp(a, {});
+    let asked = 0; const read = a.fetchJson; a.fetchJson = async (u) => { asked++; return read(u); };
+    await researchCompany(a, addCompany(a, 'northwind.com', 'manual').id).catch(() => null);
+    expect(asked).toBe(0);
+    expect(all(a.db, "select 1 from facts where kind in ('hiring','funding')")).toHaveLength(0);
+  });
+});
+
+describe('posts you bring', () => {
+  const csv = (rows: string) => { const p = join(mkdtempSync(join(tmpdir(), 'sig-')), 'posts.csv'); writeFileSync(p, rows); return p; };
+  const POST = 'Honestly our payroll is a mess this quarter, three systems and nobody owns it. Anyone fixed this?';
+
+  it('quotes the author\'s own words, cut at a sentence', () => {
+    expect(excerpt(`${'Our ramp is slow. '.repeat(10)}${'x'.repeat(300)}`).endsWith('slow.')).toBe(true);
+    expect(excerpt('Short post about payroll pain.')).toBe('Short post about payroll pain.');
+  });
+
+  it('imports posts with their company, skips rows it cannot use, and the email is written to the author', async () => {
+    const a = testApp({ pages, json, answers: { ...answers(GOOD_LI), qualify: (r: any) => ({ fit: true, score: 70, reasons: [{ text: 'Posted about payroll', fact_id: Number(/\[(\d+)\] Jordan Lee/.exec(r.user)![1]) }], missing: [] }),
+      write: (r: any) => { const id = Number(/\[(\d+)\] \(post\)/.exec(r.user)![1]); return { angle: 'post', emails: [
+        { subject: 'Your payroll post', body: 'Read your post: "our payroll is a mess this quarter". We help with that. Who owns it now?', delay_days: 0, claims: [{ text: 'our payroll is a mess this quarter', fact_id: id }] },
+      ], linkedin: undefined }; } } });
+    await learnProduct(a); await learnIcp(a, {});
+    const r = importSignals(a, csv(`domain,name,title,text,post_url,date\nnorthwind.com,Jordan Lee,Controller,"${POST}",https://www.linkedin.com/posts/jordan-1,2026-11-02\nnorthwind.com,No Text,CFO,,https://x.com/1,\n,Pat,CFO,"${POST}",https://x.com/2,\nacme-tools.com,Me,Founder,"${POST}",https://x.com/3,\nnorthwind.com,Jordan Lee,Controller,"${POST}",https://www.linkedin.com/posts/jordan-1,\n`));
+    expect(r).toMatchObject({ added: 1, duplicates: 1, companies: ['northwind.com'] });
+    expect(r.skipped.map((x) => x.reason)).toEqual(['no post text (copy the words of the post into a text column)', 'no company domain', 'your own company']);
+    const c = await researchCompany(a, 1);
+    expect(c.status).toBe('qualified');
+    expect(all<any>(a.db, "select text, quote, source_url, published_at from facts where kind = 'post'")).toEqual([{ text: `Jordan Lee, Controller, wrote in a post: "${POST}"`, quote: POST, source_url: 'https://www.linkedin.com/posts/jordan-1', published_at: '2026-11-02' }]);
+    await writeForCompany(a, 1);
+    expect(a.calls.findLast((x) => x.name === 'write')!.user).toContain('To: Jordan Lee, Controller (wrote the post the first email opens on)');
+    expect(all<any>(a.db, 'select to_title from company_emails')[0].to_title).toMatch(/^Jordan Lee, Controller/);
+    // research again keeps the post
+    await researchCompany(a, 1);
+    expect(all(a.db, "select 1 from facts where kind = 'post'")).toHaveLength(1);
+  });
+});

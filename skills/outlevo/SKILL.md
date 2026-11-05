@@ -13,7 +13,7 @@ Exit codes: 0 done, 1 failed, 2 costs Cloud credits and needs `--yes`, 3 needs a
 
 ## Order of work
 
-1. `outlevo start <website>`. It finds companies itself, as many as `--count` says (20 if not given), and builds the sales pack in `sales-pack/`: show the person `sales-pack/index.html`. Ask for `--won` and `--lost` CSV files if they have them: real deals give a far better ICP. It is safe to run again. The pack also has `linkedin.md`: a connection note and a follow-up per company for the person to send by hand from their own LinkedIn. Never send them, automate LinkedIn, or log in to it for them.
+1. `outlevo start <website>`. It finds companies itself, as many as `--count` says (20 if not given), and builds the sales pack in `sales-pack/`: show the person `sales-pack/index.html`. Ask for `--won` and `--lost` CSV files if they have them: real deals give a far better ICP. It is safe to run again. The pack also has `linkedin.md`: a connection note and a follow-up per company for the person to send by hand from their own LinkedIn. Never send them, automate LinkedIn, or log in to it for them. If the person has LinkedIn posts from prospects, they can bring them with `outlevo signals import posts.csv` (columns domain, name, text, post_url): never fetch LinkedIn yourself.
    If they want a change: `outlevo rewrite <company> "what to change"` or `outlevo drop <company>`.
 2. Only if they want to send from here, add people: `outlevo contacts find` with `HUNTER_API_KEY`, `outlevo contacts import <csv>`, or `outlevo cloud contacts <id>`.
 3. `outlevo review`, and show the person each email with its sources.

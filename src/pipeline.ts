@@ -7,6 +7,8 @@ import { type Page, quoteIsOn } from './fetcher.js';
 import { isSuppressed } from './compliance.js';
 import { type Claim, hasErrors, type KnownFact, lintEmail, type LintIssue } from './lint.js';
 import { hiringFacts } from './jobs.js';
+import { fundingFacts } from './funding.js';
+import { postAuthor, postFacts } from './brought.js';
 
 const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000; const WRITE_TRIES = 3;
 const iso = (a: App) => a.now().toISOString();
@@ -208,8 +210,10 @@ export async function researchCompany(a: App, companyId: number) {
   const pageOf = (url: string) => pages.find((p) => p.url === url);
   const quoted = x.facts.filter((f) => { const p = pageOf(f.source_url); return p && quoteIsOn(f.quote, p.text); });
   // Open roles from the job board the company's own site links to: dated, quotable, and no model call. A title the site itself was quoted on is not listed twice.
-  const jobs = (await hiringFacts(a, c.domain, pages).catch(() => [])).filter((j) => !quoted.some((f) => f.quote.toLowerCase().includes(j.quote.toLowerCase())));
-  const facts = [...quoted, ...jobs];
+  const jobs = a.config.signals.job_boards ? (await hiringFacts(a, c.domain, pages).catch(() => [])).filter((j) => !quoted.some((f) => f.quote.toLowerCase().includes(j.quote.toLowerCase()))) : [];
+  // A Form D, only when its name is theirs and its ZIP code or phone is on their own pages.
+  const funding = a.config.signals.sec_form_d ? await fundingFacts(a, x.name, pages).catch(() => []) : [];
+  const facts = [...quoted, ...jobs, ...funding];
   run(a.db, 'delete from company_emails where company_id = ?', c.id);
   run(a.db, 'delete from linkedin_notes where company_id = ?', c.id);
   run(a.db, 'delete from facts where company_id = ?', c.id);
@@ -217,6 +221,8 @@ export async function researchCompany(a: App, companyId: number) {
     const r = run(a.db, 'insert into facts (company_id, kind, text, quote, source_url, published_at, fetched_at) values (?, ?, ?, ?, ?, ?, ?)', c.id, f.kind, f.text, f.quote, f.source_url, f.published_at, iso(a));
     return { id: Number(r.lastInsertRowid), text: f.text, quote: f.quote };
   });
+  // Posts you brought (outlevo signals import): their author's own words, kept through every research run.
+  known.push(...postFacts(a, c.id));
   let people = 0;
   for (const p of x.people) {
     const page = pageOf(p.source_url);
@@ -244,8 +250,8 @@ export async function researchCompany(a: App, companyId: number) {
   const fit = v.fit && reasons.length > 0;
   const status = fit ? 'qualified' : 'disqualified';
   run(a.db, 'update companies set name = coalesce(?, name), status = ?, score = ?, reasons = ?, error = null, researched_at = ? where id = ?', x.name, status, v.score, JSON.stringify({ reasons, missing: v.missing }), iso(a), c.id);
-  logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status, facts: known.length, jobs: jobs.length, dropped: x.facts.length - quoted.length });
-  return { id: c.id, domain: c.domain, status, score: v.score, facts: known.length, jobs: jobs.length, people, dropped: x.facts.length - quoted.length };
+  logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status, facts: known.length, jobs: jobs.length, funding: funding.length, dropped: x.facts.length - quoted.length });
+  return { id: c.id, domain: c.domain, status, score: v.score, facts: known.length, jobs: jobs.length, funding: funding.length, people, dropped: x.facts.length - quoted.length };
 }
 
 export type NewContact = { company_id: number; first_name: string; last_name?: string | null; title?: string | null; email: string; email_source: 'imported' | 'published' | 'guess' | 'verified'; cloud_id?: string };
@@ -330,7 +336,8 @@ async function compose(a: App, r: Recipient) {
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one short line from their side, not a list of features, asks one easy question. No meeting request. Follow-ups: under 60 words, each opens on a different fact about this company where one fits, and says what that means for them, not a list of features, prices or terms. The last one closes the loop politely. Do not call anything news or recent unless its fact has a date within six months of today, ${iso(a).slice(0, 10)}.
-Also write linkedin, for the founder to send by hand from their own LinkedIn: a connection note (at most 280 characters) that opens on one specific fact about this company and asks for nothing, and one follow-up message for after they accept (at most 500 characters: one point from their side, one easy question). Never say or hint that you emailed them: the note may be the first thing they get. The rules below hold for these too, with their claims in linkedin.claims.
+Also write linkedin, for the founder to send by hand from their own LinkedIn: a connection note (at most 280 characters) that opens on one specific fact about this company and asks for nothing, and one follow-up message for after they accept (at most 500 characters: one point from their side, one easy question). Never say or hint that you emailed them: the note may be the first thing they get.
+A fact of kind post is something a person at this company wrote. Open on it only when you are writing to that person, as what they wrote ("Read your post on…"); never attribute their words to anyone else. The rules below hold for these too, with their claims in linkedin.claims.
 Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. Never state how buyers, markets or people like them behave, think or feel: you cannot source that, so ask it as a question or leave it out. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
     user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}${f.published_at ? `\n  Dated: ${f.published_at}` : ''}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
     schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })),
@@ -405,7 +412,8 @@ export async function writeForCompany(a: App, companyId: number) {
   const c = one<{ id: number; domain: string; name: string | null; status: string }>(a.db, 'select id, domain, name, status from companies where id = ?', companyId);
   if (!c) throw new Error(`No company ${companyId}`);
   if (c.status !== 'qualified') throw new Error(`${c.domain} is ${c.status}; only qualified companies get emails`);
-  const title = getIcp(a)?.buyer_titles[0] ?? 'the person who owns this problem';
+  // When a post you brought is the reason, its author is who it is written to.
+  const title = postAuthor(a, c.id) ?? getIcp(a)?.buyer_titles[0] ?? 'the person who owns this problem';
   const w = await compose(a, { domain: c.domain, company: c.name, company_id: c.id, to: title });
   a.db.exec('begin');
   try {

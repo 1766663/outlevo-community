@@ -15,6 +15,7 @@ import { addCompany, approve, discoverCompanies, dropCompany, rewriteEmails, get
 import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
 import { buildPack } from './pack.js';
+import { importSignals } from './brought.js';
 import { prepareSite, start } from './start.js';
 import { CONTROL } from './fetcher.js';
 
@@ -44,6 +45,7 @@ Companies and people
   companies list
   contacts import <file.csv>       Columns: email, first_name, last_name, title, domain
   contacts find [--limit 5]        With your HUNTER_API_KEY, verified addresses only
+  signals import <file.csv>        Posts you found: domain, name, text, post_url (title, date, email optional)
   research [--limit 5] [--company ID]
 Emails
   write [--limit 5] [--contact ID]
@@ -194,6 +196,12 @@ async function main() {
       if (sub === 'discover') { const r = await discoverCompanies(a, num(flags.count, 10), flags.brief); return output(r, `Added: ${r.added.join(', ') || 'none'}`); }
       const rows = all(a.db, 'select id, domain, name, status, score from companies order by id');
       return output(rows, rows.map((r: any) => `${String(r.id).padStart(4)}  ${r.status.padEnd(13)} ${String(r.score ?? '').padEnd(4)} ${r.domain}`).join('\n') || 'No companies yet.');
+    }
+    case 'signals': {
+      if (sub !== 'import') throw new Error('Usage: outlevo signals import <file.csv>');
+      const r = importSignals(a, need(arg, 'a file'));
+      return output(r, [`Added ${r.added} posts at ${r.companies.length} companies. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`),
+        ...(r.added ? ['Next: outlevo start (or outlevo research, then outlevo write). Their first email and LinkedIn note open on the post.'] : [])].join('\n'));
     }
     case 'contacts': {
       if (sub === 'import') {
