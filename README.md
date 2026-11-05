@@ -14,6 +14,10 @@
   <br /><br />
   <a href="https://outlevo.com/?utm_source=community&utm_medium=readme">Website</a>
   ·
+  <a href="https://outlevo.github.io/outlevo-community/">Example pack</a>
+  ·
+  <a href="#is-it-for-you">Is it for you?</a>
+  ·
   <a href="#community-and-outlevo-cloud">Community and Cloud</a>
   ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -29,15 +33,29 @@
   <a href="https://github.com/Outlevo/outlevo-community/releases"><img src="https://img.shields.io/github/v/release/Outlevo/outlevo-community?label=release" alt="Latest release"></a>
 </p>
 
-**Install it, give it your website, get your sales pack: who to sell to, companies that fit, and emails ready to send, each built on a quote from that company's own site.**
+**Give it your website. Get who to sell to, companies that fit, and emails built on quotes from their own sites. For founders and small B2B teams selling without an SDR.**
 
-The open-source alternative to 11x, Artisan and Apollo's outreach. It runs on your machine and sends nothing until you say so.
+<p align="center">
+  <img alt="outlevo start reads a website, finds companies that fit and writes emails, each with its quote and source" src=".github/assets/demo.gif" width="760">
+  <br />
+  <em>Sped up, with made-up companies. <a href="https://outlevo.github.io/outlevo-community/">Open a full example pack, no install needed</a>.</em>
+</p>
+
+## Quick start
+
+You need Node 22.13 or newer and an [Anthropic API key](https://console.anthropic.com/), which you pay for by use.
 
 ```bash
+git clone https://github.com/Outlevo/outlevo-community.git && cd outlevo-community
+npm install && npm run build && npm link
+mkdir my-outbound && cd my-outbound
+export ANTHROPIC_API_KEY=...
 outlevo start https://yourcompany.com
 ```
 
-It finds the companies itself. Your own list is optional. You need one thing to start: an [Anthropic API key](https://console.anthropic.com/), which you pay for by use.
+Then open `sales-pack/index.html`. It finds the companies itself, and your own list is optional. One real run of 20 companies took about 13 minutes, at about 8 model calls per company in the pack. It runs on your machine and sends nothing until you say so.
+
+The open-source alternative to 11x, Artisan and Apollo's outreach.
 
 ```
 sales-pack/
@@ -98,6 +116,30 @@ outlevo cloud contacts <company-id> --titles "VP Sales,Head of Sales" --yes
 outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person launches it
 ```
 
+## Is it for you?
+
+**Take it if** you sell to businesses, you are at ease in a terminal, and you want to read every email before it goes.
+
+**Skip it if** you want any of these:
+
+- Outreach that runs while your laptop is closed, or without you approving it. Community has no autopilot.
+- LinkedIn sent for you, or phone calls. Community writes LinkedIn notes for you to send by hand, and has no phone.
+- High volume. Sending stops at 50 emails a day per mailbox, and that ceiling cannot be raised.
+- Contacts and warmed-up mailboxes included. You bring your own, and a new mailbox needs 2-4 weeks of warm-up.
+- No terminal. It is a command-line tool, with a local dashboard for reviewing.
+
+How it compares with the usual ways of doing this, in general terms: products differ, so check the one you have in mind.
+
+| | Outlevo Community | Hosted AI SDR | Sales engagement tool | By hand |
+|---|---|---|---|---|
+| To start | Free, plus your model bill | Subscription, often after a sales call | Subscription | Your time |
+| Finding companies | Finds them, or takes your list | Finds them | You build the list, often from its database | You |
+| What an email rests on | A quote found on the company's page, checked in code | Varies: ask to see the sources | Templates and merge fields | Your own research |
+| Sending | Only what you approve, from your mailbox | On its own | Sequences you set up | You |
+| Runs | While your machine is on | Always | Always | When you do |
+| Your data | On your machine | With the vendor | With the vendor | With you |
+| Volume | Low: up to 50 a day per mailbox | Higher | High | Low |
+
 ## What makes it different
 
 - **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number written in digits must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports, numbers in words included. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
@@ -111,21 +153,9 @@ outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person la
 - **Nothing sends without you.** Every sequence waits for your approval. The answers it drafts to replies wait too. Community has no autopilot.
 - **Safe by default.** See [The rules it will not break](#the-rules-it-will-not-break).
 
-## Quick start
+## Running it
 
-You need Node 22.13 or newer and an Anthropic API key.
-
-```bash
-git clone https://github.com/Outlevo/outlevo-community.git && cd outlevo-community
-npm install && npm run build && npm link
-
-mkdir my-outbound && cd my-outbound
-export ANTHROPIC_API_KEY=...
-
-outlevo start https://yourcompany.com
-```
-
-Then open `sales-pack/index.html`. Run it again any time: it carries on from where it stopped and does not pay twice for what it has done.
+Run it again any time: it carries on from where it stopped and does not pay twice for what it has done.
 
 **As many companies as you want.** It starts with 20 if you do not say; `--count 500` goes for 500, and everything in your own list gets done whatever its size. It is your key and your bill: expect about 8 model calls for each company in the pack, because it also pays to read those that turn out not to fit. To cap it, `outlevo config set model.max_calls_per_day 200`. Only sending has a ceiling, and that protects your domain, not our costs.
 
