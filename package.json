@@ -2,6 +2,27 @@
   "name": "outlevo-community",
   "version": "0.1.0",
   "description": "Give it your website, get your sales pack: who to sell to, companies that fit, and emails built on quotes from their own sites. Open-source alternative to 11x, Artisan and Apollo's outreach.",
+  "keywords": [
+    "ai-sdr",
+    "cold-email",
+    "outbound",
+    "lead-generation",
+    "sales-automation",
+    "b2b",
+    "linkedin",
+    "claude",
+    "anthropic",
+    "cli",
+    "open-source"
+  ],
+  "homepage": "https://outlevo.com/?utm_source=community&utm_medium=npm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1766663/outlevo-community.git"
+  },
+  "bugs": {
+    "url": "https://github.com/1766663/outlevo-community/issues"
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {

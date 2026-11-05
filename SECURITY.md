@@ -1,6 +1,6 @@
 # Security
 
-Please do not open a public issue for a vulnerability. Write to hello@outlevo.com with the steps to reproduce it.
+Please do not open a public issue for a vulnerability. Write to security@notify.outlevo.com with the steps to reproduce it.
 
 What we care about most:
 

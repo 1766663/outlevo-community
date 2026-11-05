@@ -1,4 +1,5 @@
-import { mkdtempSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -154,5 +155,15 @@ describe('settings and outside addresses', () => {
     expect(addressFits(a, 'dana@other.com', 'n.com')).toBe(false);
     expect(addressFits(a, 'dana@evil-n.com', 'n.com')).toBe(false);
     expect(addressFits(a, 'gone@n.com', 'n.com')).toBe(false);
+  });
+});
+
+describe('outlevo --version', () => {
+  it('prints the package version without touching .outlevo/', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ver-'));
+    const repo = process.cwd();
+    const out = execFileSync(process.execPath, ['--import', join(repo, 'node_modules/tsx/dist/esm/index.mjs'), join(repo, 'src/cli.ts'), '--version'], { cwd, encoding: 'utf8' });
+    expect(out.trim()).toBe(JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version);
+    expect(existsSync(join(cwd, '.outlevo'))).toBe(false);
   });
 });

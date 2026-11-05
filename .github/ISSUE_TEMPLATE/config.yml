@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/1766663/outlevo-community/security/policy
+    about: Please do not open a public issue. See how to report it privately.
+  - name: A question about Outlevo Cloud or having it run for you
+    url: https://outlevo.com/contact/?utm_source=community&utm_medium=github
+    about: Plans, billing and the done-for-you offer are handled outside this repository.
