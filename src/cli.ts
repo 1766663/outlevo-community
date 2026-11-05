@@ -308,7 +308,7 @@ main().catch((e) => {
   if (e instanceof NeedsConfirm) { console.error(e.message); process.exitCode = 2; return; }
   if ((e as any).exit) { console.error((e as Error).message); process.exitCode = (e as any).exit; return; }
   if (e instanceof CloudError && e.status === 402) console.error(`${e.message}\nMore credits: ${SIGNUP_URL}`);
-  else if (/authentication method/i.test((e as Error).message)) console.error('No model key. Set ANTHROPIC_API_KEY, or use a local Claude Code: outlevo config set model.provider claude-cli');
+  else if (/authentication method/i.test((e as Error).message)) console.error('No model key. Set ANTHROPIC_API_KEY, or use the local command-line tool from Anthropic: outlevo config set model.provider local-cli');
   else console.error((e as Error).message);
   process.exitCode = 1;
 });

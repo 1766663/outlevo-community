@@ -8,7 +8,7 @@ import { DEFAULTS, loadConfig, loadSecrets, saveConfig, saveSecret, setPath } fr
 import { normalizeDomain, parseCsv } from '../src/csv.js';
 import { one } from '../src/db.js';
 import { cycle } from '../src/loop.js';
-import { AnthropicModel, BudgetExhausted, ClaudeCliModel, metered, ModelRefused, parseJson } from '../src/model.js';
+import { AnthropicModel, BudgetExhausted, LocalCliModel, metered, ModelRefused, parseJson } from '../src/model.js';
 import { addCompany, addressFits } from '../src/pipeline.js';
 import { cloudOf, cloudUrlOk } from '../src/cloud.js';
 import { suppress } from '../src/compliance.js';
@@ -72,13 +72,13 @@ describe('model', () => {
     await expect(m.json(r)).resolves.toEqual({});
   });
   it('finds JSON in text around it', () => { expect(parseJson('Here you go:\n{"a":1}\nDone')).toEqual({ a: 1 }); expect(() => parseJson('no')).toThrow(); });
-  it('runs claude with no tools and no prompt on the command line', async () => {
+  it('runs the local tool with no tools and no prompt on the command line', async () => {
     let args: string[] = []; let stdin = '';
     const exec = ((_c: string, a: string[], _o: unknown, cb: (e: null, out: string) => void) => {
       args = a; setImmediate(() => cb(null, JSON.stringify({ result: '{"ok":true}' })));
       return { stdin: { end: (s: string) => { stdin = s; } } };
     }) as any;
-    expect(await new ClaudeCliModel('m', exec).json({ name: 'x', system: 'sys', user: 'secret question', schema: {} })).toEqual({ ok: true });
+    expect(await new LocalCliModel('m', exec).json({ name: 'x', system: 'sys', user: 'secret question', schema: {} })).toEqual({ ok: true });
     expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual(['--tools', '']);
     expect(args.join(' ')).not.toContain('secret question');
     expect(stdin).toContain('secret question');

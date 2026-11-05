@@ -221,7 +221,7 @@ Everything is in `.outlevo/` next to where you run it, readable only by you: a S
 
 It uses the Anthropic API by default, on your own key, with no limit unless you set `model.max_calls_per_day`. Change the model with `outlevo config set model.name <id>`.
 
-You can use a local Claude Code install instead with `outlevo config set model.provider claude-cli`. Check that your plan's terms allow this kind of use before you do.
+You can use Anthropic's local command-line tool instead with `outlevo config set model.provider local-cli`. Check that your plan's terms allow this kind of use before you do.
 
 ## Development
 
@@ -233,7 +233,7 @@ npm run dev -- --help
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). AI coding agents: [AGENTS.md](AGENTS.md).
 
-Built with TypeScript on Node.js and its built-in SQLite, with [Claude](https://www.anthropic.com/claude) as the default model. Nothing else to host.
+Built with TypeScript on Node.js and its built-in SQLite, with Anthropic's models by default. Nothing else to host.
 
 ## Contact
 

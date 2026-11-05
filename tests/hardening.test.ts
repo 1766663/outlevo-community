@@ -10,7 +10,7 @@ import { all, one, openDb, openPath, run } from '../src/db.js';
 import { extractLinks, htmlToText, makeFetcher, quoteIsOn, robotsAllows, robotsRuleMatches } from '../src/fetcher.js';
 import { lintEmail, linksIn } from '../src/lint.js';
 import { smtpOptions } from '../src/mailer.js';
-import { ClaudeCliModel } from '../src/model.js';
+import { LocalCliModel } from '../src/model.js';
 import { buildPack, packData } from '../src/pack.js';
 import { importContacts, reviewQueue, withoutDeals } from '../src/pipeline.js';
 import { authServers, checkReplies, sendSuggestedReply, senderProven } from '../src/replies.js';
@@ -245,13 +245,13 @@ describe('deals stay out of the search', () => {
   });
 });
 
-describe('the claude-cli provider', () => {
+describe('the local-cli provider', () => {
   it('runs in an empty private folder of its own, and removes it', async () => {
     let cwd = ''; let during = false;
     const exec = ((_c: string, _a: string[], o: any, cb: any) => { cwd = o.cwd; during = readdirSync(cwd).length === 0 && (statSync(cwd).mode & 0o077) === 0; setImmediate(() => cb(null, JSON.stringify({ result: '{"ok":true}' }))); return { stdin: { end() {} } }; }) as any;
-    expect(await new ClaudeCliModel('m', exec).json({ name: 'x', system: 's', user: 'u', schema: {} })).toEqual({ ok: true });
+    expect(await new LocalCliModel('m', exec).json({ name: 'x', system: 's', user: 'u', schema: {} })).toEqual({ ok: true });
     expect(during).toBe(true);
-    expect(cwd.startsWith('/tmp/') && !cwd.includes('outlevo-claude-')).toBe(false);
+    expect(cwd.startsWith('/tmp/') && !cwd.includes('outlevo-model-')).toBe(false);
     expect(existsSync(cwd)).toBe(false);
   });
 });

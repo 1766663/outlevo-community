@@ -83,21 +83,24 @@ export class AnthropicModel implements Model {
   }
 }
 
-/** Through a local `claude` install. No tools, and no project setup, reach the model. */
-export class ClaudeCliModel implements Model {
+/** The command the local provider runs: the name its maker gives it. */
+const LOCAL_CLI = 'claude';
+
+/** Through the model maker's local command-line tool. No tools, and no project setup, reach the model. */
+export class LocalCliModel implements Model {
   constructor(private name: string, private exec: typeof execFile = execFile) {}
   json<T>(r: JsonRequest): Promise<T> {
     const prompt = `${r.user}\n\nAnswer with only a JSON object matching this schema:\n${JSON.stringify(r.schema)}`;
     return new Promise((resolve, reject) => {
-      // An empty folder of its own: claude reads settings and MCP servers from where it runs, and a shared /tmp is open to anyone on the machine.
-      const cwd = mkdtempSync(join(tmpdir(), 'outlevo-claude-'));
-      const child = this.exec('claude', ['-p', '--output-format', 'json', '--model', this.name, '--tools', '', '--system-prompt', r.system],
+      // An empty folder of its own: the tool reads settings and MCP servers from where it runs, and a shared /tmp is open to anyone on the machine.
+      const cwd = mkdtempSync(join(tmpdir(), 'outlevo-model-'));
+      const child = this.exec(LOCAL_CLI, ['-p', '--output-format', 'json', '--model', this.name, '--tools', '', '--system-prompt', r.system],
         { maxBuffer: 20_000_000, timeout: 300_000, cwd }, (err, stdout) => {
           rmSync(cwd, { recursive: true, force: true });
-          if (err) return reject(new Error(`claude failed: ${err.message}`));
+          if (err) return reject(new Error(`The local model tool failed: ${err.message}`));
           try {
             const outer = JSON.parse(String(stdout)) as { result?: string; is_error?: boolean };
-            if (outer.is_error || !outer.result) return reject(new Error(`claude failed: ${outer.result ?? 'no result'}`));
+            if (outer.is_error || !outer.result) return reject(new Error(`The local model tool failed: ${outer.result ?? 'no result'}`));
             resolve(parseJson<T>(outer.result));
           } catch (e) { reject(e as Error); }
         });
@@ -126,6 +129,6 @@ export function metered(inner: Model, db: Db, limit: number, now: () => Date = (
 }
 
 export function makeModel(c: Config, db: Db): Model {
-  const inner = c.model.provider === 'claude-cli' ? new ClaudeCliModel(c.model.name) : new AnthropicModel(c.model.name);
+  const inner = c.model.provider === 'local-cli' ? new LocalCliModel(c.model.name) : new AnthropicModel(c.model.name);
   return metered(inner, db, c.model.max_calls_per_day);
 }

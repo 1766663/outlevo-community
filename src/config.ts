@@ -11,7 +11,7 @@ export type Config = {
   limits: { start_per_day: number; add_per_day: number; max_per_day: number; min_gap_minutes: number; send_hours: [number, number]; weekdays: number[]; timezone: string; bounce_stop_rate: number };
   warmup_start: string | null;
   do_not_contact: string[];
-  model: { provider: 'anthropic' | 'claude-cli'; name: string; max_calls_per_day: number };
+  model: { provider: 'anthropic' | 'local-cli'; name: string; max_calls_per_day: number };
   booking_url: string;
   contacts: { max_lookups_per_day: number };
   loop_minutes: number;
