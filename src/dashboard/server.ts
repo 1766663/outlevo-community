@@ -18,6 +18,9 @@ const SECURITY = {
   'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store',
 };
 
+const MINUTE = 60_000;
+const LINK_LASTS = 60 * MINUTE; const IDLE_LASTS = 60 * MINUTE; const SESSION_LASTS = 12 * 60 * MINUTE;
+
 const CHART_DAYS = 14;
 /** The numbers behind the charts, counted over everything and not only the rows the tables show. Every step of the funnel counts companies. */
 export function chartData(a: App) {
@@ -90,12 +93,20 @@ export function startDashboard(a: App, port = 5757, opts: { person?: boolean } =
   const token = randomBytes(24).toString('base64url');
   // The link sits in a terminal and a browser history, so it works once and the page runs on a secret of its own.
   const session = randomBytes(24).toString('base64url'); let linkUsed = false;
+  const nowMs = () => a.now().getTime();
+  const linkMade = nowMs(); let sessionFrom = 0; let lastUsed = 0;
   const same = (given: string | undefined, secret: string) => {
     if (!given) return false;
     const x = Buffer.from(given); const y = Buffer.from(secret);
     return x.length === y.length && timingSafeEqual(x, y);
   };
   const cookieOf = (req: IncomingMessage) => req.headers.cookie?.match(/(?:^|;\s*)ol_session=([^;]+)/)?.[1];
+  const inside = (req: IncomingMessage) => linkUsed && same(cookieOf(req), session) && nowMs() - sessionFrom < SESSION_LASTS && nowMs() - lastUsed < IDLE_LASTS;
+  const AGAIN = 'Start outlevo dashboard again for a new link.';
+  const refusal = (req: IncomingMessage) => {
+    if (linkUsed) return same(cookieOf(req), session) ? `This session has ended. ${AGAIN}` : `That link works once and has been used. ${AGAIN}`;
+    return nowMs() - linkMade < LINK_LASTS ? 'Open the link that outlevo dashboard printed.' : `That link has expired. ${AGAIN}`;
+  };
 
   const json = (res: ServerResponse, status: number, body: unknown) => { res.writeHead(status, { ...SECURITY, 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
   const readBody = async (req: IncomingMessage) => {
@@ -123,26 +134,28 @@ export function startDashboard(a: App, port = 5757, opts: { person?: boolean } =
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
       if (req.method === 'GET' && url.pathname === '/') {
-        if (!linkUsed && same(url.searchParams.get('token') ?? undefined, token)) {
-          linkUsed = true;
-          res.writeHead(303, { ...SECURITY, location: '/', 'set-cookie': `ol_session=${session}; HttpOnly; SameSite=Strict; Path=/` });
+        if (!linkUsed && nowMs() - linkMade < LINK_LASTS && same(url.searchParams.get('token') ?? undefined, token)) {
+          linkUsed = true; sessionFrom = lastUsed = nowMs();
+          res.writeHead(303, { ...SECURITY, location: '/', 'set-cookie': `ol_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_LASTS / 1000}` });
           return res.end();
         }
-        const inside = same(cookieOf(req), session);
-        if (inside && url.search) { res.writeHead(303, { ...SECURITY, location: '/' }); return res.end(); }
-        if (!inside) { res.writeHead(401, { ...SECURITY, 'content-type': 'text/plain' }); return res.end(linkUsed ? 'That link works once and has been used. Start outlevo dashboard again for a new one.' : 'Open the link that outlevo dashboard printed.'); }
+        const allowed = inside(req);
+        if (allowed && url.search) { res.writeHead(303, { ...SECURITY, location: '/' }); return res.end(); }
+        if (!allowed) { res.writeHead(401, { ...SECURITY, 'content-type': 'text/plain' }); return res.end(refusal(req)); }
+        lastUsed = nowMs();
         res.writeHead(200, { ...SECURITY, 'content-type': 'text/html; charset=utf-8' });
         return res.end(readFileSync(join(PUBLIC, 'index.html')));
       }
       if (url.pathname === '/favicon.ico') { res.writeHead(204, SECURITY); return res.end(); }
       const asset = ASSETS[url.pathname];
       if (req.method === 'GET' && asset) { res.writeHead(200, { ...SECURITY, 'content-type': `${asset[1]}; charset=utf-8` }); return res.end(readFileSync(join(PUBLIC, asset[0]))); }
-      if (!same(cookieOf(req), session)) return json(res, 401, { error: 'Open the link that outlevo dashboard printed' });
+      if (!inside(req)) return json(res, 401, { error: refusal(req) });
 
       if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, { ...dashboardState(a), person });
       if (req.method === 'GET' && url.pathname === '/api/doctor') return json(res, 200, await readiness(a));
       const action = actions[url.pathname];
       if (req.method === 'POST' && action) {
+        lastUsed = nowMs(); // The page polls by itself, so only what a person does keeps the session open.
         // SameSite covers browsers; this covers anything that ignores it.
         if (req.headers['content-type'] !== 'application/json') return json(res, 415, { error: 'JSON only' });
         if (!person && NEEDS_PERSON.has(url.pathname)) return json(res, 403, { error: 'This needs a person: start outlevo dashboard in your own terminal, and do it there' });

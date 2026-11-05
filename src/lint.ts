@@ -1,3 +1,5 @@
+import { TLDS } from './tlds.js';
+
 export type Claim = { text: string; fact_id: number };
 export type KnownFact = { id: number; text: string; quote: string };
 export type LintIssue = { level: 'error' | 'warning'; rule: string; message: string };
@@ -8,7 +10,7 @@ export type LintInput = {
 };
 
 const SPAM = ['act now', 'limited time', 'guarantee', '100% free', 'risk-free', 'no obligation', 'click here', 'buy now', 'cash', 'winner', 'double your', 'once in a lifetime', 'urgent'];
-const FAKE_HISTORY = /\b(as (we )?(discussed|promised|agreed)\b(?! (in|on) (your|the|their))|following up on our (call|chat|conversation)|per our (call|conversation)|great (talking|speaking|chatting) (to|with) you|nice (to|meeting) you (again|last)|when we (spoke|talked|met))\b/i;
+const FAKE_HISTORY = /\b(as (we )?(discussed|promised|agreed)\b(?! (in|on) (your|the|their))|following up on our (call|chat|conversation)|per our (call|conversation)|great (talking|speaking|chatting) (to|with) you|nice (to|meeting) you (again|last)|when we (spoke|talked|met)|like we (discussed|agreed)|per my last (email|message)|thanks for getting back to me|great meeting you)\b/i;
 const FAKE_FIRST = /\b(following up on (my|our) (last|previous|earlier)|thanks for (the|our) (call|chat|meeting)|as (i|we) mentioned)\b/i;
 const MACHINE = /\b(i hope this (email|message) finds you|i came across your (company|profile|website)|hope you('| a)re (doing )?well|in today'?s fast-paced|leverage synerg|unlock (the )?(full )?potential|game-?changer|revolutionize|seamless(ly)? integrat)\b/i;
 const NUMBER = /(?<![\w.])[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:%|k\b|m\b|bn?\b)?/gi;
@@ -21,6 +23,31 @@ const normText = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replac
 const GENERAL_CLAIM = /^(most |many |those |these |such )?(buyers?|customers?|clients?|founders?|teams?|companies|firms?|people|prospects?|ceos?|owners?)\s+(like\s+(that|this|these|those|you|yours)|(of\s+)?that\s+size)\b/i;
 
 /** Rules, not a model: the same email always gets the same answer, and it works with no key and no network. */
+const SCHEME_LINK = /https?:\/\/[^\s)>\]]+/gi;
+// Mail programs turn evil.example/login into a link with no scheme.
+const BARE_HOST = /(?<![\p{L}\p{N}._-])((?:[\p{L}\p{N}_](?:[\p{L}\p{N}_-]*[\p{L}\p{N}_])?\.)+(?:\p{L}{2,}|xn--[a-z0-9-]+))(?![\p{L}\p{N}_@-])((?:[:/?#][^\s)>\]]+)?)/giu;
+const BARE_IP = /(?<![\w.@-])\d{1,3}(?:\.\d{1,3}){3}[:/][^\s)>\]]+/g;
+const INVISIBLE = /[­​-‍⁠﻿]/g;
+const WIDE_DOT = /(?<=[a-z0-9-])[。．｡](?=[a-z0-9])/gi;
+const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ''; } };
+
+/** Every link in the text. `full` is what reads as a link, against a plain mention of a domain, which still has to be allowed but is not counted as one. */
+export function linksIn(raw: string): Array<{ url: string; full: boolean }> {
+  const text = raw.replace(INVISIBLE, '').replace(WIDE_DOT, '.');
+  const out = [...text.matchAll(SCHEME_LINK)].map((m) => ({ url: m[0], full: true }));
+  const rest = text.replace(SCHEME_LINK, ' ');
+  for (const m of rest.matchAll(BARE_HOST)) {
+    const [, host, path] = m as unknown as [string, string, string];
+    if (rest[m.index - 1] === '@' && !path) continue; // An email address.
+    const url = `https://${host}${path}`;
+    // With nothing after it, only a real domain ending is a link: "Node.js", "schema.sql" and "pricing.We" are words.
+    if (!path && (!TLDS.has(hostOf(url).split('.').at(-1)!) || host.toLowerCase() === 'asp.net')) continue;
+    out.push({ url, full: Boolean(path) || /^www\./i.test(host) });
+  }
+  for (const m of rest.matchAll(BARE_IP)) out.push({ url: `https://${m[0]}`, full: true });
+  return out;
+}
+
 export function lintEmail(i: LintInput): LintIssue[] {
   const strict = i.strict !== false; const step = i.step ?? 1;
   const out: LintIssue[] = [];
@@ -30,7 +57,7 @@ export function lintEmail(i: LintInput): LintIssue[] {
 
   if (!i.subject.trim()) add('error', 'subject-empty', strict ? 'The subject is empty' : 'No subject found: start the file with a line like Subject: Your subject');
   if (!i.body.trim()) add('error', 'body-empty', 'The body is empty');
-  if (/^\s*(re|fw|fwd)\s*:/i.test(i.subject) && step === 1) add('error', 'fake-thread', 'A first email must not pretend to be a reply or a forward');
+  if (/^\s*(re|fw|fwd|aw|sv|antw|wg)(\[\d+\])?\s*:/i.test(i.subject) && step === 1) add('error', 'fake-thread', 'A first email must not pretend to be a reply or a forward');
   if (FAKE_HISTORY.test(all) || (step === 1 && FAKE_FIRST.test(all))) add('error', 'fake-history', 'It claims a past conversation');
   if (/\{\{.*?\}\}|\[(first ?name|name|company|your [^\]]+|insert[^\]]*)\]|<(first_?name|company)>/i.test(all)) add('error', 'merge-tag', 'A merge tag or placeholder would go out blank');
 
@@ -45,11 +72,12 @@ export function lintEmail(i: LintInput): LintIssue[] {
   // "Buyers like that delete generic pitches fast": nobody can source it, and it reads as a fact. As a question it is fine.
   for (const s of i.body.split(/(?<=[.!?])\s+/)) if (!s.trim().endsWith('?') && GENERAL_CLAIM.test(s.trim())) add(hard, 'general-claim', `"${s.trim()}" says how people behave, with no source. Ask it, or leave it out`);
 
-  const links = [...i.body.matchAll(/https?:\/\/[^\s)>\]]+/gi)].map((m) => m[0]);
-  if (links.length > 1) add(hard, 'links', `${links.length} links; a cold email carries one at most`);
+  const links = linksIn(i.body);
+  const counted = links.filter((l) => l.full).length;
+  if (counted > 1) add(hard, 'links', `${counted} links; a cold email carries one at most`);
   if (i.allowedLinkDomains) for (const l of links) {
-    let host = ''; try { host = new URL(l).hostname.replace(/^www\./, ''); } catch { /* reported below */ }
-    if (!i.allowedLinkDomains.some((d) => host === d || host.endsWith(`.${d}`))) add('error', 'link-domain', `A link goes to ${host || l}, which is neither your site nor the prospect's`);
+    let host = ''; try { host = new URL(l.url).hostname.replace(/^www\./, ''); } catch { /* reported below */ }
+    if (!i.allowedLinkDomains.some((d) => host === d || host.endsWith(`.${d}`))) add('error', 'link-domain', `A link goes to ${host || l.url}, which is neither your site nor the prospect's`);
   }
   if (!strict) {
     // With no sources to hold it against, it can only point at the figures most often made up.

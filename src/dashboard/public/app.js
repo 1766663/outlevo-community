@@ -222,10 +222,11 @@ function render() {
 
 async function load() {
   const r = await fetch('/api/state');
-  if (!r.ok) throw new Error('Open the link that outlevo dashboard printed');
+  if (r.status === 401) { clearInterval(polling); const e = new Error((await r.json()).error); document.getElementById('main').replaceChildren(el('p', {}, e.message)); throw e; }
+  if (!r.ok) throw new Error('Could not read the state');
   state = await r.json();
   doctor = await (await fetch('/api/doctor')).json();
 }
 const refresh = async () => { if (busy || document.hidden) return; try { await load(); render(); } catch (e) { toast(e.message); } };
 load().then(render).catch((e) => { document.getElementById('main').replaceChildren(el('p', {}, e.message)); });
-setInterval(refresh, 20_000);
+const polling = setInterval(refresh, 20_000);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasErrors, lintEmail, parseEmailFile } from '../src/lint.js';
+import { hasErrors, lintEmail, linksIn, parseEmailFile } from '../src/lint.js';
 
 const facts = [{ id: 1, text: 'Northwind is hiring 4 account executives', quote: 'We are hiring 4 account executives in Austin.' }];
 const good = { subject: 'Your Austin AE hires', body: 'Northwind is hiring account executives in Austin. We help new reps find their first accounts. Who owns ramp for them?', step: 1, claims: [{ text: 'Northwind is hiring account executives in Austin', fact_id: 1 }], facts };
@@ -32,6 +32,24 @@ describe('lintEmail', () => {
   it('refuses links to anywhere but the two companies', () => {
     expect(rules({ ...good, body: `${good.body} https://evil.example/x`, allowedLinkDomains: ['acme.com', 'northwind.com'] })).toContain('link-domain');
     expect(rules({ ...good, body: `${good.body} https://www.acme.com/x`, allowedLinkDomains: ['acme.com'] })).toEqual([]);
+  });
+  it('refuses links with no scheme, which mail programs still make clickable', () => {
+    const allowed = { ...good, allowedLinkDomains: ['acme.com', 'northwind.com'] };
+    for (const planted of ['evil.example/login', 'evil.example', 'EVIL.COM', 'www.evil.example', 'evil.example:8080/x', '(evil.zip)', '<evil.xyz/a>', 'see evil.co.uk.', 'пример.рф', 'xn--e1afmkfd.xn--p1ai', '1.2.3.4/login', 'acme.com@evil.example/login', 'acme.com.evil.example', 'notacme.com'])
+      expect(rules({ ...allowed, body: `${good.body} ${planted}` }), planted).toContain('link-domain');
+  });
+  it('takes the allowed domains in any form, and leaves words and addresses alone', () => {
+    const allowed = { ...good, allowedLinkDomains: ['acme.com', 'northwind.com'] };
+    for (const fine of ['acme.com', 'www.acme.com/pricing', 'docs.acme.com/a', 'Northwind.com', 'sam@evil.example', 'sam.lee@evil.example', 'Node.js', 'report.pdf', 'ASP.NET', 'e.g. this', 'i.e. that', 'the U.S. market', 'at 3 p.m. today', 'version 2.5 or 1.2.3', 'costs 3.5k'])
+      expect(rules({ ...allowed, body: `${good.body} ${fine}` }), fine).not.toContain('link-domain');
+  });
+  it('counts bare links with a path as links, and a domain merely named as none', () => {
+    expect(rules({ ...good, body: `${good.body} acme.com/a acme.com/b` })).toContain('links');
+    expect(rules({ ...good, body: `${good.body} https://acme.com/a acme.com/b` })).toContain('links');
+    expect(rules({ ...good, body: `${good.body} On northwind.com, and https://acme.com/a` })).not.toContain('links');
+  });
+  it('does not read the path of a link as a second link', () => {
+    expect(linksIn('https://acme.com/evil.example/x')).toEqual([{ url: 'https://acme.com/evil.example/x', full: true }]);
   });
   it('without facts, warns rather than refuses what it cannot judge', () => {
     const issues = lintEmail({ subject: 'Hello', body: 'We grew revenue 400%. Click here https://a.example https://b.example', strict: false });
