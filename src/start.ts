@@ -32,7 +32,7 @@ export function prepareSite(a: App, site: string, relearn: boolean) {
     run(a.db, 'delete from product'); run(a.db, 'delete from product_facts'); run(a.db, 'delete from icp');
     run(a.db, "update companies set status = 'new', score = null, reasons = null where status in ('qualified', 'disqualified')");
     run(a.db, "delete from drafts where status in ('pending', 'blocked', 'rejected')");
-    run(a.db, 'delete from company_emails');
+    run(a.db, 'delete from company_emails'); run(a.db, 'delete from linkedin_notes');
     logEvent(a.db, a.now(), 'product.switched', { from: old, to: next });
   }
   a.config.website = site;

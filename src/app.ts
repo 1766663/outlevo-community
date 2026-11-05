@@ -1,12 +1,12 @@
 import { type Config, homeDir, loadConfig, loadSecrets } from './config.js';
 import { type Db, openDb } from './db.js';
-import { makeFetcher, type PageFetcher } from './fetcher.js';
+import { type JsonFetcher, makeFetcher, makeJsonFetcher, type PageFetcher } from './fetcher.js';
 import { makeMailer, type Mailer } from './mailer.js';
 import { makeModel, type Model } from './model.js';
 
 export type App = {
   db: Db; config: Config; home: string; now: () => Date;
-  model: () => Model; fetchPage: PageFetcher; mailer: () => Mailer;
+  model: () => Model; fetchPage: PageFetcher; fetchJson: JsonFetcher; mailer: () => Mailer;
   secrets: ReturnType<typeof loadSecrets>;
 };
 
@@ -14,7 +14,7 @@ export function makeApp(home = homeDir()): App {
   const config = loadConfig(home); const db = openDb(home); const secrets = loadSecrets(home);
   let model: Model | undefined; let mailer: Mailer | undefined;
   return {
-    db, config, home, now: () => new Date(), secrets, fetchPage: makeFetcher(),
+    db, config, home, now: () => new Date(), secrets, fetchPage: makeFetcher(), fetchJson: makeJsonFetcher(),
     model: () => (model ??= makeModel(config, db)),
     mailer: () => (mailer ??= makeMailer(config, secrets)),
   };

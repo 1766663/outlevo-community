@@ -30,6 +30,8 @@ create table if not exists company_emails (
   id integer primary key, company_id integer not null references companies(id) on delete cascade, step integer not null,
   subject text not null, body text not null, claims text not null, angle text, delay_days integer not null default 0,
   lint text not null, blocked integer not null default 0, to_title text, created_at text not null, unique (company_id, step));
+create table if not exists linkedin_notes (
+  company_id integer primary key references companies(id) on delete cascade, note text not null, message text not null, claims text not null, created_at text not null);
 create table if not exists replies (
   id integer primary key, contact_id integer references contacts(id) on delete set null, message_id text unique, from_addr text not null,
   subject text, text text, class text not null, reason text, received_at text not null,

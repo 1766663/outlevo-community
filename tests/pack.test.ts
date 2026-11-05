@@ -36,7 +36,7 @@ describe('start makes a sales pack', () => {
     const lines: string[] = [];
     const r = await start(a, { count: 1, out: dir }, (l) => lines.push(l), { checks: NOT_READY });
     expect(r.pack.companies).toBe(1);
-    expect(readdirSync(dir).filter((f) => !f.startsWith('.')).sort()).toEqual(['companies.csv', 'emails', 'ideal-customer.md', 'index.html']);
+    expect(readdirSync(dir).filter((f) => !f.startsWith('.')).sort()).toEqual(['companies.csv', 'emails', 'ideal-customer.md', 'index.html', 'linkedin.md']);
     const mail = readFileSync(join(dir, 'emails', 'northwind.com.md'), 'utf8');
     expect(mail).toContain('Write to: Head of Sales');
     expect(mail).toContain('"We are hiring account executives in Austin" https://northwind.com/');
