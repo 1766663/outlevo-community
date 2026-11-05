@@ -16,6 +16,7 @@ sales-pack/
   ideal-customer.md   who to sell to, and why
   companies.csv       each company: why it fits, who to write to, the quote and its source, the emails
   emails/             3 emails per company, with sources
+  linkedin.md         a connection note and a follow-up per company, to send by hand from your own LinkedIn
 ```
 
 What each company looks like in it, with a made-up example:
@@ -31,17 +32,20 @@ their first accounts. Who owns ramp for them?
 "We are hiring 4 account executives in Austin"   https://northwind.example/careers
 ```
 
-## Then, three ways to send
+## Then, four ways to send
 
-1. **Yourself, free.** Copy the emails, or load `companies.csv` into the tool you use.
+1. **Yourself, free.** Copy the emails, or load `companies.csv` into the tool you use. Send the notes in `linkedin.md` from your own LinkedIn, before the emails or after them: this tool never touches LinkedIn.
 2. **From your own mailbox with this tool, free.** You bring a mailbox on a separate domain and a source of contacts (your Hunter key or a list). It sends what you approve, reads replies, offers your calendar and counts meetings. See [From approved email to meeting](#from-approved-email-to-meeting).
 3. **With [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme), from $29 a month.** Verified contacts and warmed-up mailboxes, ready to go, running while your laptop is closed.
+4. **[Have Outlevo's team run it](https://outlevo.com/done-for-you/?utm_source=community&utm_medium=readme).** Managed from $999 a month, or pay per booked meeting, by application.
 
 > **Status: early.** The checks, limits and guards have tests. It has not yet been run end to end against a live model, a real mailbox and Hunter, so expect rough edges and start with a small list.
 
 ## What makes it different
 
 - **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number written in digits must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports, numbers in words included. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
+- **It knows who is hiring.** When a company's own site links to its job board on Greenhouse, Lever or Ashby, the open roles of the last 60 days become dated facts, each quoting the title and linking to the posting. A company hiring sellers is often buying for them. No key and no model call: the boards are public. Only a board the company itself links to counts, so a posting is never pinned on the wrong company.
+- **LinkedIn too, by hand.** With the emails, from the same quotes and held to the same checks, it writes a connection note and a follow-up for each company. A note that fails is left out and never holds back the emails. It never says "I emailed you", so it can go first.
 - **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
 - **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
@@ -122,7 +126,7 @@ Bookings are counted from the emails Calendly, Cal.com and Google Calendar send 
 
 | | What Community does instead | What you still bring |
 |---|---|---|
-| 11x, Artisan | Research, email, replies, the path to a meeting, with your approval at each send. Email only: no LinkedIn or phone | Mailbox, contacts |
+| 11x, Artisan | Research, email, replies, the path to a meeting, with your approval at each send. LinkedIn notes to send by hand; no LinkedIn automation or phone | Mailbox, contacts |
 | Apollo | Sequences and AI writing | Contacts: there is no built-in database |
 | Clay | AI research on company sites, with a quote for every answer | Other data providers |
 
@@ -173,7 +177,9 @@ Community is complete on its own and stays free. [Outlevo Cloud](https://outlevo
 | Mailboxes | Your own, set up and warmed by you | Bought, set up and warmed for you |
 | Sending | When you have approved it and your machine is on | Around the clock, with autopilot |
 | Meetings | Booking link in answers you approve, meetings counted | Answered and booked on autopilot |
+| LinkedIn | Notes to send by hand | Sent from your own account, LinkedIn signals (posts, engagement, job changes), voice notes |
 | CRM, ads, agencies | No | Yes |
+| Done for you | No | Managed from $999 a month, or pay per meeting by application |
 | Support | GitHub Issues | AI answers, with escalation |
 
 You can use just part of Cloud from the command line, and each paid call tells you its price first:

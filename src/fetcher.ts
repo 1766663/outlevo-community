@@ -6,9 +6,13 @@ import { Agent, fetch as undiciFetch } from 'undici';
 export const USER_AGENT = 'OutlevoCommunityBot/0.1 (+https://outlevo.com)';
 const MAX_BYTES = 1_500_000;
 const TIMEOUT_MS = 12_000;
+/** A job board lists every posting with its full description: a big company's is several megabytes. */
+const MAX_JSON_BYTES = 10_000_000;
 
 export type Page = { url: string; text: string; links: string[]; title: string | null };
 export type PageFetcher = (url: string) => Promise<Page | null>;
+/** Parsed JSON from a public API (a job board), or null. Untrusted like any page: read it, never follow it. */
+export type JsonFetcher = (url: string) => Promise<unknown | null>;
 
 const privateV4 = (p: number[]) => {
   const [a = 0, b = 0] = p;
@@ -178,11 +182,11 @@ async function get(raw: string, doFetch: typeof fetch, accept: string, allowed: 
   return null;
 }
 
-async function readCapped(res: Response): Promise<string> {
+async function readCapped(res: Response, max = MAX_BYTES): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return '';
   const chunks: Uint8Array[] = []; let size = 0;
-  while (size < MAX_BYTES) {
+  while (size < max) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value); size += value.length;
@@ -191,11 +195,11 @@ async function readCapped(res: Response): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-/** One page, or null when robots.txt says no, it is not HTML, or it is not there. */
-export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
+/** Whether robots.txt lets us read a URL, remembered per origin. */
+function robotsChecker(doFetch: typeof fetch) {
   const robots = new Map<string, string>();
   // Asked at every hop: a redirect to another host answers to that host's rules.
-  const robotsSay = async (raw: string) => {
+  return async (raw: string) => {
     const u = new URL(raw);
     if (!robots.has(u.origin)) {
       const r = await get(`${u.origin}/robots.txt`, doFetch, 'text/plain').catch(() => null);
@@ -205,6 +209,11 @@ export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
     }
     return robotsAllows(robots.get(u.origin)!, u.pathname + u.search);
   };
+}
+
+/** One page, or null when robots.txt says no, it is not HTML, or it is not there. */
+export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
+  const robotsSay = robotsChecker(doFetch);
   return async (raw) => {
     const r = await get(raw, doFetch, 'text/html,application/xhtml+xml', robotsSay);
     if (!r?.res.ok || !/html|text\/plain/i.test(r.res.headers.get('content-type') ?? '')) return null;
@@ -217,3 +226,13 @@ export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
 const norm = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
 /** A model may only state what the page says: its quote has to be on the page, word for word. */
 export const quoteIsOn = (quote: string, pageText: string) => quote.trim().length >= 12 && norm(pageText).includes(norm(quote));
+
+/** A public JSON API, with the same guards as a page: public addresses only, robots.txt, a size and time cap. */
+export function makeJsonFetcher(doFetch: typeof fetch = pinnedFetch): JsonFetcher {
+  const robotsSay = robotsChecker(doFetch);
+  return async (raw) => {
+    const r = await get(raw, doFetch, 'application/json', robotsSay);
+    if (!r?.res.ok || !/json/i.test(r.res.headers.get('content-type') ?? '')) return null;
+    try { return JSON.parse(await readCapped(r.res, MAX_JSON_BYTES)); } catch { return null; }
+  };
+}

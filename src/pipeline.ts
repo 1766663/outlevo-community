@@ -6,6 +6,7 @@ import { all, logEvent, one, run } from './db.js';
 import { type Page, quoteIsOn } from './fetcher.js';
 import { isSuppressed } from './compliance.js';
 import { type Claim, hasErrors, type KnownFact, lintEmail, type LintIssue } from './lint.js';
+import { hiringFacts } from './jobs.js';
 
 const MAX_PAGES = 6; const MAX_PAGE_CHARS = 20_000; const WRITE_TRIES = 3;
 const iso = (a: App) => a.now().toISOString();
@@ -205,8 +206,12 @@ export async function researchCompany(a: App, companyId: number) {
     schema: obj({ name: nullable('string'), facts: arr(FACT), people: arr(obj({ first_name: S, last_name: nullable('string'), title: nullable('string'), email: nullable('string'), quote: S, source_url: S })) }),
   });
   const pageOf = (url: string) => pages.find((p) => p.url === url);
-  const facts = x.facts.filter((f) => { const p = pageOf(f.source_url); return p && quoteIsOn(f.quote, p.text); });
+  const quoted = x.facts.filter((f) => { const p = pageOf(f.source_url); return p && quoteIsOn(f.quote, p.text); });
+  // Open roles from the job board the company's own site links to: dated, quotable, and no model call. A title the site itself was quoted on is not listed twice.
+  const jobs = (await hiringFacts(a, c.domain, pages).catch(() => [])).filter((j) => !quoted.some((f) => f.quote.toLowerCase().includes(j.quote.toLowerCase())));
+  const facts = [...quoted, ...jobs];
   run(a.db, 'delete from company_emails where company_id = ?', c.id);
+  run(a.db, 'delete from linkedin_notes where company_id = ?', c.id);
   run(a.db, 'delete from facts where company_id = ?', c.id);
   const known: KnownFact[] = facts.map((f) => {
     const r = run(a.db, 'insert into facts (company_id, kind, text, quote, source_url, published_at, fetched_at) values (?, ?, ?, ?, ?, ?, ?)', c.id, f.kind, f.text, f.quote, f.source_url, f.published_at, iso(a));
@@ -224,7 +229,7 @@ export async function researchCompany(a: App, companyId: number) {
   // That read is paid for, so this is an answer and not an error to try again on every start. outlevo research --company reads it again on request.
   if (!known.length) {
     run(a.db, "update companies set name = coalesce(?, name), status = 'disqualified', reasons = ?, error = null, researched_at = ? where id = ?", x.name, JSON.stringify({ reasons: [], missing: ['Nothing on its site could be quoted'] }), iso(a), c.id);
-    logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status: 'disqualified', facts: 0, dropped: x.facts.length });
+    logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status: 'disqualified', facts: 0, dropped: x.facts.length - quoted.length });
     return { id: c.id, domain: c.domain, status: 'disqualified' };
   }
 
@@ -239,8 +244,8 @@ export async function researchCompany(a: App, companyId: number) {
   const fit = v.fit && reasons.length > 0;
   const status = fit ? 'qualified' : 'disqualified';
   run(a.db, 'update companies set name = coalesce(?, name), status = ?, score = ?, reasons = ?, error = null, researched_at = ? where id = ?', x.name, status, v.score, JSON.stringify({ reasons, missing: v.missing }), iso(a), c.id);
-  logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status, facts: known.length, dropped: x.facts.length - known.length });
-  return { id: c.id, domain: c.domain, status, score: v.score, facts: known.length, people, dropped: x.facts.length - known.length };
+  logEvent(a.db, a.now(), 'company.researched', { domain: c.domain, status, facts: known.length, jobs: jobs.length, dropped: x.facts.length - quoted.length });
+  return { id: c.id, domain: c.domain, status, score: v.score, facts: known.length, jobs: jobs.length, people, dropped: x.facts.length - quoted.length };
 }
 
 export type NewContact = { company_id: number; first_name: string; last_name?: string | null; title?: string | null; email: string; email_source: 'imported' | 'published' | 'guess' | 'verified'; cloud_id?: string };
@@ -281,7 +286,28 @@ export function importContacts(a: App, path: string) {
   return { added, duplicates, new_companies: newCompanies, skipped };
 }
 
-type Written = { angle: string; emails: Array<{ subject: string; body: string; delay_days: number; claims: Claim[] }> };
+type LinkedinTouch = { note: string; message: string; claims: Claim[] };
+type Written = { angle: string; emails: Array<{ subject: string; body: string; delay_days: number; claims: Claim[] }>; linkedin?: LinkedinTouch | null };
+
+/** LinkedIn's limit for a connection note on a paid account (200 on a free one: the pack says so). */
+export const NOTE_MAX = 300;
+export const LI_MESSAGE_MAX = 600;
+const normLi = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim();
+/**
+ * The same rules as an email, for text a person sends by hand from their own LinkedIn: each claim cited and in the
+ * text, numbers only from cited quotes, no links at all, within LinkedIn's length, and never "I emailed you".
+ */
+export function lintLinkedin(a: App, li: LinkedinTouch, facts: KnownFact[]): [LintIssue[], LintIssue[]] {
+  const productFacts = all<{ text: string; quote: string }>(a.db, 'select text, quote from product_facts');
+  const one_ = (body: string, step: number, max: number, label: string) => {
+    const claims = li.claims.filter((c) => normLi(body).includes(normLi(c.text)));
+    const out = lintEmail({ subject: label, body, step, claims, facts, productFacts, allowedLinkDomains: [] });
+    if (body.length > max) out.push({ level: 'error', rule: 'too-long', message: `${body.length} characters; LinkedIn ${step === 1 ? 'notes take' : 'messages here keep to'} ${max}` });
+    if (/\b(e-?mail(ed|s)?|inbox)\b/i.test(body)) out.push({ level: 'error', rule: 'mentions-email', message: 'It mentions an email: it may be the first thing they get from you' });
+    return out;
+  };
+  return [one_(li.note, 1, NOTE_MAX, 'LinkedIn note'), one_(li.message, 2, LI_MESSAGE_MAX, 'LinkedIn message')];
+}
 
 /** Where an email to this company may link: your site and theirs. */
 export const linkDomains = (a: App, domain: string) => [normalizeDomain(one<{ url: string }>(a.db, 'select url from product')?.url ?? ''), domain].filter((d): d is string => Boolean(d));
@@ -304,9 +330,11 @@ async function compose(a: App, r: Recipient) {
     name: 'write', effort: 'high',
     system: `You write short cold email for a founder, in plain ${a.config.language === 'en-GB' ? 'British' : 'American'} English. ${UNTRUSTED}
 First email: under 90 words, opens on one specific fact about this company, says what we do in one short line from their side, not a list of features, asks one easy question. No meeting request. Follow-ups: under 60 words, each opens on a different fact about this company where one fits, and says what that means for them, not a list of features, prices or terms. The last one closes the loop politely. Do not call anything news or recent unless its fact has a date within six months of today, ${iso(a).slice(0, 10)}.
+Also write linkedin, for the founder to send by hand from their own LinkedIn: a connection note (at most 280 characters) that opens on one specific fact about this company and asks for nothing, and one follow-up message for after they accept (at most 500 characters: one point from their side, one easy question). Never say or hint that you emailed them: the note may be the first thing they get. The rules below hold for these too, with their claims in linkedin.claims.
 Only state what the quotes say: a fact's summary can go further than its quote, and the quote is what your email is checked against. Each statement about the prospect is a claim: copy its exact words from the email into claims.text and cite its fact_id. No number may appear unless it is in a fact you cite or in a fact about our product. Never state how buyers, markets or people like them behave, think or feel: you cannot source that, so ask it as a question or leave it out. No links. No greeting and no name of the recipient, no flattery, no fake familiarity, no footer (it is added on sending). Write the final text: no placeholders.`,
     user: `We sell: ${product.summary}\nFacts about us:\n${productFacts.map((f) => `- ${f.text}`).join('\n')}\nFrom: ${a.config.sender.name || 'the founder'}${a.config.sender.company ? `, ${a.config.sender.company}` : ''}\n\nTo: ${r.to}, at ${r.company ?? r.domain}\nFacts about them:\n${untrusted(r.domain, facts.map((f) => `[${f.id}] (${f.kind}) ${f.text}\n  Quote: ${f.quote}${f.published_at ? `\n  Dated: ${f.published_at}` : ''}`).join('\n'))}\n\nWrite 3 emails. delay_days is 0 for the first, then days since the one before.${r.change ? `\n\nThe emails as they stand:\n${r.change.emails.map((e, i) => `Email ${i + 1}. Subject: ${e.subject}\n${e.body}`).join('\n\n')}\n\nThe founder asks you to change them: ${r.change.instruction}\nChange what was asked and keep the rest. Everything above about facts and claims still holds, whatever the request.` : ''}${feedback}`,
-    schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })) }),
+    schema: obj({ angle: S, emails: arr(obj({ subject: S, body: S, delay_days: { type: 'integer' }, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) })),
+      linkedin: obj({ note: S, message: S, claims: arr(obj({ text: S, fact_id: { type: 'integer' } })) }) }),
   });
   // The rules catch what was declared. A second reading catches what was not: anything said about them that no quote supports.
   const reread = async (emails: Array<{ n: number; subject: string; body: string }>) => {
@@ -320,24 +348,32 @@ Only state what the quotes say: a fact's summary can go further than its quote, 
     if (!Array.isArray(v?.unsupported)) throw new Error(`The second check of the emails to ${r.domain} gave no clear answer`);
     return v.unsupported;
   };
-  const checked = async (seq: Written, settled: boolean[]) => {
+  // The LinkedIn note and message are read with the emails, as 101 and 102: one second reading for all of it.
+  const LI = 101;
+  const checked = async (seq: Written, settled: boolean[], liSettled: boolean) => {
     const out = lintSequence(a, seq, facts, r.domain);
+    const li = seq.linkedin?.note && seq.linkedin.message ? lintLinkedin(a, seq.linkedin, facts) : null;
     const toRead = seq.emails.map((e, i) => ({ n: i + 1, subject: e.subject, body: e.body })).filter((e) => !settled[e.n - 1] && !hasErrors(out[e.n - 1]!));
-    if (!toRead.length) return out;
+    if (li && !liSettled && !hasErrors(li.flat())) toRead.push({ n: LI, subject: 'LinkedIn connection note', body: seq.linkedin!.note }, { n: LI + 1, subject: 'LinkedIn message', body: seq.linkedin!.message });
+    if (!toRead.length) return { out, li };
     for (const u of await reread(toRead)) {
       // A verdict naming an email it was not shown still counts, against all it was shown.
       const hit = toRead.some((e) => e.n === u.email) ? [u.email] : toRead.map((e) => e.n);
-      for (const n of hit) out[n - 1]!.push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
+      for (const n of hit) (n >= LI ? li![n - LI]! : out[n - 1]!).push({ level: 'error', rule: 'unsupported-statement', message: `"${u.statement}" is not supported by any quote` });
     }
-    return out;
+    return { out, li };
   };
   // An email that passed is kept, so a refused follow-up costs that follow-up and not the company. Without a first email there is nothing.
   const passed: Array<{ email: Written['emails'][number]; issues: LintIssue[] } | undefined> = [];
+  // LinkedIn is extra: it never holds back the emails, and is only kept when it passes on its own.
+  let linkedin: LinkedinTouch | null = null;
   let seq!: Written; let issues: LintIssue[][] = []; let feedback = '';
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     seq = await ask(feedback);
     seq = { ...seq, emails: seq.emails.slice(0, 3) };
-    issues = await checked(seq, seq.emails.map((_, i) => !!passed[i]));
+    const c = await checked(seq, seq.emails.map((_, i) => !!passed[i]), !!linkedin);
+    issues = c.out;
+    if (!linkedin && c.li && !hasErrors(c.li.flat())) linkedin = seq.linkedin!;
     seq.emails.forEach((email, i) => { if (!passed[i] && !hasErrors(issues[i]!)) passed[i] = { email, issues: issues[i]! }; });
     if (seq.emails.every((_, i) => passed[i])) break;
     const kept = passed.flatMap((p, i) => p ? [`Email ${i + 1}. Subject: ${p.email.subject}\n${p.email.body}`] : []);
@@ -345,7 +381,7 @@ Only state what the quotes say: a fact's summary can go further than its quote, 
     feedback = `\n\nYour last try was refused:\n${refused.join('\n')}\nFix every one of these, and say nothing the quotes do not say.${kept.length ? `\nThese passed. Return them word for word:\n${kept.join('\n\n')}` : ''}`;
   }
   const refused = issues.flatMap((x, i) => passed[i] ? [] : x.filter((y) => y.level === 'error'));
-  if (!passed[0]) return { seq, emails: seq.emails, issues, refused, blocked: true };
+  if (!passed[0]) return { seq, emails: seq.emails, issues, refused, blocked: true, linkedin: null };
   // A gap closes, because each step counts from the one before. The email after it still waits as long as it was meant to.
   const good: Array<NonNullable<(typeof passed)[number]>> = []; let carried = 0;
   for (let i = 0; i < Math.max(passed.length, seq.emails.length); i++) {
@@ -353,7 +389,14 @@ Only state what the quotes say: a fact's summary can go further than its quote, 
     if (!p) { carried += delayOf(i, seq.emails[i]?.delay_days ?? 0); continue; }
     good.push({ ...p, email: { ...p.email, delay_days: delayOf(i, p.email.delay_days) + carried } }); carried = 0;
   }
-  return { seq, emails: good.map((p) => p.email), issues: good.map((p) => p.issues), refused, blocked: false };
+  return { seq, emails: good.map((p) => p.email), issues: good.map((p) => p.issues), refused, blocked: false, linkedin };
+}
+
+/** The company's LinkedIn note and follow-up: replaced by a new one, removed when a rewrite has none that passed. */
+function saveLinkedin(a: App, companyId: number, li: LinkedinTouch | null) {
+  if (!li) { run(a.db, 'delete from linkedin_notes where company_id = ?', companyId); return; }
+  run(a.db, `insert into linkedin_notes (company_id, note, message, claims, created_at) values (?, ?, ?, ?, ?)
+    on conflict (company_id) do update set note = excluded.note, message = excluded.message, claims = excluded.claims, created_at = excluded.created_at`, companyId, li.note.trim(), li.message.trim(), JSON.stringify(li.claims), iso(a));
 }
 const delayOf = (i: number, days: number) => Math.max(i === 0 ? 0 : 2, days);
 
@@ -369,6 +412,7 @@ export async function writeForCompany(a: App, companyId: number) {
     run(a.db, 'delete from company_emails where company_id = ?', c.id);
     w.emails.forEach((e, i) => run(a.db, 'insert into company_emails (company_id, step, subject, body, claims, angle, delay_days, lint, blocked, to_title, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       c.id, i + 1, e.subject, e.body, JSON.stringify(e.claims), w.seq.angle, delayOf(i, e.delay_days), JSON.stringify(w.issues[i] ?? []), w.blocked ? 1 : 0, title, iso(a)));
+    saveLinkedin(a, c.id, w.linkedin);
     a.db.exec('commit');
   } catch (e) { a.db.exec('rollback'); throw e; }
   logEvent(a.db, a.now(), 'company.written', { company_id: c.id, blocked: w.blocked });
@@ -391,6 +435,7 @@ export async function writeSequence(a: App, contactId: number) {
     const w = await compose(a, { domain: row.domain, company: row.name, company_id: row.company_id, to: `${row.first_name} ${row.last_name ?? ''}, ${row.title ?? 'job unknown'}` });
     rows = w.emails.map((e, i) => ({ step: i + 1, subject: e.subject, body: e.body, claims: JSON.stringify(e.claims), angle: w.seq.angle, delay_days: delayOf(i, e.delay_days), lint: JSON.stringify(w.issues[i] ?? []) }));
     blocked = w.blocked; errors = w.issues.flat().filter((x) => x.level === 'error');
+    saveLinkedin(a, row.company_id, w.linkedin);
   }
   a.db.exec('begin');
   try {
@@ -437,6 +482,7 @@ export async function rewriteEmails(a: App, ref: string, instruction: string) {
       run(a.db, 'delete from company_emails where company_id = ?', c.id);
       w.emails.forEach((e, i) => run(a.db, 'insert into company_emails (company_id, step, subject, body, claims, angle, delay_days, lint, blocked, to_title, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)', c.id, i + 1, e.subject, e.body, JSON.stringify(e.claims), w.seq.angle, delayOf(i, e.delay_days), JSON.stringify(w.issues[i] ?? []), own[0]?.to_title ?? null, iso(a)));
     }
+    saveLinkedin(a, c.id, w.linkedin);
     a.db.exec('commit');
   } catch (e) { a.db.exec('rollback'); throw e; }
   logEvent(a.db, a.now(), 'emails.rewritten', { company_id: c.id });
