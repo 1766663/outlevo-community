@@ -30,7 +30,7 @@ export function packData(a: App): PackCompany[] {
       to: person ? `${person.first_name} ${person.last_name ?? ''}`.trim() + (person.title ? `, ${person.title}` : '') : own[0]?.to_title ?? '',
       person: person ? `${person.first_name} ${person.last_name ?? ''}`.trim() : null, email: person?.email ?? null,
       blocked: rows.some((r) => r.status === 'blocked' || r.blocked === 1),
-      emails: rows.map((r) => ({ step: r.step, sent: r.status === 'sent', subject: r.subject, body: r.body, delay_days: r.delay_days, claims: withSources(r.claims) })),
+      emails: rows.map((r) => ({ step: r.step, sent: r.status === 'sent', subject: r.step > 1 && rows[0]?.step === 1 ? `Re: ${rows[0].subject}` : r.subject, body: r.body, delay_days: r.delay_days, claims: withSources(r.claims) })),
     };
   });
 }

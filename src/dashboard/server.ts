@@ -63,7 +63,7 @@ export function chartData(a: App) {
 
 export function dashboardState(a: App) {
   const count = (status: string) => one<{ n: number }>(a.db, 'select count(*) as n from companies where status = ?', status)?.n ?? 0;
-  const replies = all<any>(a.db, `select r.id, r.from_addr, r.subject, r.text, r.class, r.reason, r.received_at, r.suggested, r.suggested_status, p.first_name, p.last_name, c.domain
+  const replies = all<any>(a.db, `select r.id, r.from_addr, r.subject, r.text, r.class, r.reason, r.received_at, r.suggested, r.suggested_status, r.verified, p.first_name, p.last_name, c.domain
     from replies r left join contacts p on p.id = r.contact_id left join companies c on c.id = p.company_id order by r.received_at desc limit 50`);
   return {
     product: one(a.db, 'select url, summary, updated_at from product') ?? null, icp: getIcp(a),

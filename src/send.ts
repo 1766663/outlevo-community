@@ -2,7 +2,7 @@ import type { App } from './app.js';
 import { type Check, checkBounces, dailyLimit, footer, inSendingHours, isStopped, isSuppressed, readiness, ready, sentToday, unsubscribeHeader } from './compliance.js';
 import { all, logEvent, one, run } from './db.js';
 import { hasErrors, lintEmail } from './lint.js';
-import { linkDomains } from './pipeline.js';
+import { linkDomains, subjectAsSent } from './pipeline.js';
 
 export type SendResult = { sent: false; reason: string } | { sent: true; to: string; subject: string; step: number };
 
@@ -79,12 +79,12 @@ export async function sendNext(a: App, opts: { dryRun?: boolean; checks?: () => 
   const d = got;
 
   const s = a.config.sender;
-  const subject = d.step > 1 ? `Re: ${one<{ subject: string }>(a.db, 'select subject from drafts where contact_id = ? and step = 1', d.contact_id)?.subject ?? d.subject}` : d.subject;
+  const subject = subjectAsSent(a, d.contact_id, d.step, d.subject);
   let res: { messageId: string };
   try {
     res = await a.mailer().send({
       from: `${s.name} <${s.email}>`, to: d.email, subject, text: d.body + footer(a.config),
-      headers: unsubscribeHeader(a.config),
+      headers: unsubscribeHeader(a, d.contact_id),
       ...(d.message_id_prev ? { inReplyTo: d.message_id_prev, references: d.message_id_prev } : {}),
     });
   } catch (e) {

@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import type { App } from './app.js';
 import { type Config, DEFAULTS, HARD_DAILY_LIMIT, settingsProblems } from './config.js';
@@ -111,7 +112,18 @@ export function footer(c: Config): string {
   return `\n\n--\n${c.sender.name}, ${c.sender.company}\n${c.sender.postal_address}\nNot for you? Reply "stop" and I won't write again.`;
 }
 
-export const unsubscribeHeader = (c: Config) => ({ 'List-Unsubscribe': `<mailto:${c.sender.email}?subject=unsubscribe>` });
+/** Names the person in the subject, not the address: it works on any mail server, and an unsubscribe sent from a forwarded mailbox still finds who it is for. Signed, so nobody can opt out someone else. */
+export function unsubscribeToken(a: App, contactId: number) {
+  let secret = getMeta(a.db, 'unsubscribe_secret');
+  if (!secret) { secret = randomBytes(24).toString('hex'); setMeta(a.db, 'unsubscribe_secret', secret); }
+  return `u${contactId}-${createHmac('sha256', secret).update(String(contactId)).digest('hex').slice(0, 16)}`;
+}
+export const unsubscribeHeader = (a: App, contactId?: number | null) => ({ 'List-Unsubscribe': `<mailto:${a.config.sender.email}?subject=unsubscribe${contactId ? `-${unsubscribeToken(a, contactId)}` : ''}>` });
+/** The contact an unsubscribe subject really names, if any. */
+export function unsubscribedContact(a: App, subject: string): number | null {
+  const m = subject.match(/\bunsubscribe-(u(\d+)-[0-9a-f]{16})\b/i);
+  return m && m[1]!.toLowerCase() === unsubscribeToken(a, Number(m[2])) ? Number(m[2]) : null;
+}
 
 export type Check = { name: string; ok: boolean; blocking: boolean; detail: string };
 type Dns = { txt: (name: string) => Promise<string[][]>; mx: (name: string) => Promise<unknown[]> };

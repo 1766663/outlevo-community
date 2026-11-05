@@ -36,7 +36,7 @@ describe('sending', () => {
     expect(m.to).toBe('dana@northwind.com');
     expect(m.text).toContain('1 Main St, Springfield, IL 62701');
     expect(m.text).toContain('Reply "stop"');
-    expect(m.headers?.['List-Unsubscribe']).toBe('<mailto:sam@getacme.com?subject=unsubscribe>');
+    expect(m.headers?.['List-Unsubscribe']).toMatch(/^<mailto:sam@getacme\.com\?subject=unsubscribe-u\d+-[0-9a-f]{16}>$/);
   });
   it('blocks a link added after approval, at the moment of sending', async () => {
     const a = testApp(); approve(a, seed(a));
@@ -344,7 +344,7 @@ describe('replies', () => {
     const a = classified({ class: 'question', reason: 'Asks', suggested_reply: 'Yes, it does.' }); approve(a, seed(a)); await send(a);
     await checkReplies(a, inbox([{ from: 'dana@northwind.com', text: 'Does it do this?' }]));
     await sendSuggestedReply(a, one<any>(a.db, 'select id from replies').id, { checks: OK_CHECKS });
-    expect(a.sent.at(-1)!.headers?.['List-Unsubscribe']).toBe('<mailto:sam@getacme.com?subject=unsubscribe>');
+    expect(a.sent.at(-1)!.headers?.['List-Unsubscribe']).toMatch(/^<mailto:sam@getacme\.com\?subject=unsubscribe/);
   });
   it('any reply stops that person and their company', async () => {
     const a = classified({ class: 'not_now', reason: 'Later', suggested_reply: null }); const id = seed(a); approve(a, id);

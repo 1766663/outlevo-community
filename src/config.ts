@@ -7,7 +7,7 @@ export type Config = {
   website: string; language: 'en-US' | 'en-GB';
   sender: { name: string; company: string; email: string; postal_address: string };
   smtp: { host: string; port: number; secure: boolean; user: string };
-  imap: { host: string; port: number; secure: boolean; user: string };
+  imap: { host: string; port: number; secure: boolean; user: string; auth_server: string };
   limits: { start_per_day: number; add_per_day: number; max_per_day: number; min_gap_minutes: number; send_hours: [number, number]; weekdays: number[]; timezone: string; bounce_stop_rate: number };
   warmup_start: string | null;
   do_not_contact: string[];
@@ -22,7 +22,7 @@ export const DEFAULTS: Config = {
   website: '', language: 'en-US',
   sender: { name: '', company: '', email: '', postal_address: '' },
   smtp: { host: '', port: 465, secure: true, user: '' },
-  imap: { host: '', port: 993, secure: true, user: '' },
+  imap: { host: '', port: 993, secure: true, user: '', auth_server: '' },
   limits: { start_per_day: 5, add_per_day: 3, max_per_day: 30, min_gap_minutes: 4, send_hours: [9, 17], weekdays: [1, 2, 3, 4, 5], timezone: 'America/New_York', bounce_stop_rate: 0.03 },
   warmup_start: null,
   do_not_contact: [],

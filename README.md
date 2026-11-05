@@ -114,7 +114,7 @@ outlevo run        # replies, send, contacts, write, research, every 5 minutes
 
 A new mailbox needs 2-4 weeks of warm-up before real volume, with a warm-up service of your choice. So expect the first meetings some weeks after you start, and no number of them is promised.
 
-Bookings are counted from the emails Calendly, Cal.com and Google Calendar send you, and only when your mail provider has verified the sender (DKIM or DMARC, in the `Authentication-Results` header). If yours adds no such header, record them by hand with `outlevo meetings add <contact-id>`, and know that a forger could add one of their own.
+Bookings are counted from the emails Calendly, Cal.com and Google Calendar send you, and only when your mail provider has verified the sender (DKIM or DMARC, in the `Authentication-Results` header). It counts only the verdict of your provider's own server, worked out from `imap.host`; if real bookings show as not proven in Activity, set yours with `outlevo config set imap.auth_server mx.yourprovider.com` (the event names the server it saw). If yours adds no such header, record them by hand with `outlevo meetings add <contact-id>`; a forger who guesses your provider's server name could still write one.
 
 `outlevo --help` lists every command, and `--json` makes any of them easy for scripts and agents. To let an AI coding agent drive it, see [skills/outlevo/SKILL.md](skills/outlevo/SKILL.md).
 
@@ -134,10 +134,10 @@ These are in the code, and each has a test.
 |---|---|
 | Approved emails only | A send picks only what a person approved, and checks it again at that moment. An approval covers the emails that were shown: if they changed in between, nothing is approved. `approve`, `answer` and `resume` need a person at a terminal, or a dashboard started from one |
 | Unsourced claims do not go out | The checks in [`src/lint.ts`](src/lint.ts) run when written and again when sent |
-| Links go only where they should | An email may link to your site or the prospect's, and an answer to your booking host too, with or without `https://`. A domain spelled out to dodge this (`evil dot com`) is not caught, so read what you approve |
+| Links go only where they should | An email may link to your site or the prospect's, and an answer to your booking host too, with or without `https://`. That covers `evil dot com` and links handed on in a query, as in `yoursite.com/r?u=evil.com`. A redirect with a coded target is not caught, so read what you approve |
 | No fake threads or fake history | No "Re:" on a first email, no "as we discussed" |
-| Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
-| A reply stops the sequence | For that person and for the rest of their company. An out-of-office does not |
+| Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header signed for that person, so it counts even when sent from a mailbox they forward to. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
+| A reply stops the sequence | For that person and for the rest of their company, even if the sender cannot be verified, because missing a real opt-out is worse. Those replies are marked `sender not verified`. An out-of-office does not stop it |
 | No guessed addresses | Addresses come from your import, from a page that prints them, or from a verification service |
 | Volume stays low | Ramps from your warm-up date, with a ceiling of 50 a day that settings cannot raise. By default, one email every 4 minutes in business hours on weekdays, which you can change |
 | It stops itself | Sending stops when over 3% of the last 200 people bounced, once there are 20 people or 3 bounces to go on. A bounce counts only if it quotes the email we sent or comes verified from your domain or theirs, so a stranger cannot stop you with forged ones; others are listed in the dashboard's Activity as not trusted. `outlevo run` sends nothing in a turn when it cannot read replies. `outlevo stop` stops everything at any time, answers included |

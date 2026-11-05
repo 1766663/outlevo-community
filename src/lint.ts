@@ -29,7 +29,18 @@ const BARE_HOST = /(?<![\p{L}\p{N}._-])((?:[\p{L}\p{N}_](?:[\p{L}\p{N}_-]*[\p{L}
 const BARE_IP = /(?<![\w.@-])\d{1,3}(?:\.\d{1,3}){3}[:/][^\s)>\]]+/g;
 const INVISIBLE = /[­​-‍⁠﻿]/g;
 const WIDE_DOT = /(?<=[a-z0-9-])[。．｡](?=[a-z0-9])/gi;
+// Written out so a filter misses it. "the dot com era" is English, so a plain "dot" counts only before the commonest endings.
+const SPELLED_MARK = /(?<![a-z0-9-])((?:[a-z0-9-]+\s*(?:\[\.\]|\(\.\)|\[dot\]|\(dot\)|\{dot\})\s*)+)([a-z]{2,})\b/gi;
+const SPELLED_WORD = /(?<![a-z0-9-])([a-z0-9-]+)\s+dot\s+(com|net|org|io|ai|co|app|dev|xyz|info|biz)\b/gi;
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ''; } };
+
+const unescaped = (s: string) => { let t = s; for (let i = 0; i < 2; i++) { try { t = decodeURIComponent(t); } catch { break; } } return t; };
+/** The hosts a link hands on to, in its query or spelled out in its path: a redirect on an allowed site goes wherever it is told. */
+export function hostsInside(url: string): string[] {
+  let u: URL; try { u = new URL(url); } catch { return []; }
+  const inPath = /https?:/i.test(unescaped(u.pathname)) ? unescaped(u.pathname).replace(/^.*?(https?:)/i, '$1') : '';
+  return linksIn(`${inPath} ${unescaped(u.search + u.hash).replace(/[?&#=]/g, ' ')}`).map((l) => hostOf(l.url).replace(/^www\./, '')).filter(Boolean);
+}
 
 /** Every link in the text. `full` is what reads as a link, against a plain mention of a domain, which still has to be allowed but is not counted as one. */
 export function linksIn(raw: string): Array<{ url: string; full: boolean }> {
@@ -45,6 +56,8 @@ export function linksIn(raw: string): Array<{ url: string; full: boolean }> {
     out.push({ url, full: Boolean(path) || /^www\./i.test(host) });
   }
   for (const m of rest.matchAll(BARE_IP)) out.push({ url: `https://${m[0]}`, full: true });
+  for (const m of rest.matchAll(SPELLED_MARK)) if (TLDS.has(m[2]!.toLowerCase())) out.push({ url: `https://${m[1]!.replace(/\s*(?:\[\.\]|\(\.\)|\[dot\]|\(dot\)|\{dot\})\s*/gi, '.')}${m[2]}`, full: true });
+  for (const m of rest.matchAll(SPELLED_WORD)) if (!/^(the|a|an|polka|per|this|that)$/i.test(m[1]!)) out.push({ url: `https://${m[1]}.${m[2]}`, full: true });
   return out;
 }
 
@@ -77,7 +90,9 @@ export function lintEmail(i: LintInput): LintIssue[] {
   if (counted > 1) add(hard, 'links', `${counted} links; a cold email carries one at most`);
   if (i.allowedLinkDomains) for (const l of links) {
     let host = ''; try { host = new URL(l.url).hostname.replace(/^www\./, ''); } catch { /* reported below */ }
-    if (!i.allowedLinkDomains.some((d) => host === d || host.endsWith(`.${d}`))) add('error', 'link-domain', `A link goes to ${host || l.url}, which is neither your site nor the prospect's`);
+    const fits = (h: string) => i.allowedLinkDomains!.some((d) => h === d || h.endsWith(`.${d}`));
+    if (!fits(host)) add('error', 'link-domain', `A link goes to ${host || l.url}, which is neither your site nor the prospect's`);
+    for (const inside of hostsInside(l.url)) if (!fits(inside)) add('error', 'link-domain', `A link hands on to ${inside}, which is neither your site nor the prospect's`);
   }
   if (!strict) {
     // With no sources to hold it against, it can only point at the figures most often made up.

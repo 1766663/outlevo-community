@@ -65,6 +65,19 @@ function dealsIn(a: App, path?: string) {
   return { domains: [...domains], skipped };
 }
 
+/** The ICP goes into the web search, so your deals stay in learned_from: a model told to leave them out can still name one. */
+export function withoutDeals(icp: Icp, domains: string[]): Icp {
+  const out = (words: string[]) => {
+    const list = [...new Set(words)].filter((w) => w.length >= 3).sort((x, y) => y.length - x.length).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/-/g, '[- ]'));
+    if (!list.length) return (s: string) => s;
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${list.join('|')})(?![\\p{L}\\p{N}])`, 'giu');
+    return (s: string) => s.replace(re, 'a past deal');
+  };
+  const names = domains.flatMap((d) => d.split('.').slice(0, -1)).filter((w) => !['www', 'com', 'org', 'net'].includes(w));
+  const full = out(domains); const free = out([...domains, ...names]);
+  return { ...icp, summary: free(icp.summary), must_have: icp.must_have.map(free), rule_out: icp.rule_out.map(free), industries: icp.industries.map(full), buyer_titles: icp.buyer_titles.map(full), markets: icp.markets.map(full), company_size: full(icp.company_size) };
+}
+
 /** From the website alone, or, far better, from the companies you actually won and lost. */
 export async function learnIcp(a: App, opts: { won?: string; lost?: string; brief?: string }) {
   const product = one<{ summary: string }>(a.db, 'select summary from product');
@@ -77,12 +90,13 @@ export async function learnIcp(a: App, opts: { won?: string; lost?: string; brie
     const pages = await Promise.all(domains.map(async (d) => [d, (await readSite(a, d, 1))[0]] as const));
     return pages.filter(([, p]) => p).map(([d, p]) => untrusted(`${label}: ${d}`, p!.text.slice(0, 3000))).join('\n');
   };
-  const icp = await a.model().json<Icp>({
+  const learned = await a.model().json<Icp>({
     name: 'learn_icp', effort: 'high',
-    system: `You define who a B2B company should sell to. ${UNTRUSTED} Prefer what the won and lost companies show over what the website claims; name in learned_from which it came from. When there are no deals, say so in learned_from.`,
+    system: `You define who a B2B company should sell to. ${UNTRUSTED} Prefer what the won and lost companies show over what the website claims; name in learned_from which it came from, and name no won or lost company anywhere else. When there are no deals, say so in learned_from.`,
     user: `What we sell: ${product.summary}\n${opts.brief ? `The founder says: ${opts.brief}\n` : ''}\nCompanies we won:\n${await read(won, 'won') || '(none given)'}\n\nCompanies we lost:\n${await read(lost, 'lost') || '(none given)'}\n\nDefine the ideal customer: what the won companies share and the lost ones lack.`,
     schema: ICP_SCHEMA,
   });
+  const icp = withoutDeals(learned, [...won, ...lost]);
   run(a.db, 'insert into icp (id, body, source, updated_at) values (1, ?, ?, ?) on conflict (id) do update set body = excluded.body, source = excluded.source, updated_at = excluded.updated_at', JSON.stringify(icp), won.length || lost.length ? 'deals' : 'website', iso(a));
   logEvent(a.db, a.now(), 'icp.learned', { won: won.length, lost: lost.length });
   return { ...icp, deals_read: { won, lost, skipped } };
@@ -487,6 +501,9 @@ export function nextToWrite(a: App, limit: number) {
   return [...best.values()].slice(0, limit).map((b) => b.id);
 }
 
+/** A follow-up goes out in the first email's thread, under its subject: what you review is what they get. */
+export const subjectAsSent = (a: App, contactId: number, step: number, subject: string) => step > 1 ? `Re: ${one<{ subject: string }>(a.db, 'select subject from drafts where contact_id = ? and step = 1', contactId)?.subject ?? subject}` : subject;
+
 export function reviewQueue(a: App) {
   const drafts = all<any>(a.db, `select d.*, p.first_name, p.last_name, p.title, p.email, p.email_source, c.domain, c.name as company, c.id as company_id, c.score
     from drafts d join contacts p on p.id = d.contact_id join companies c on c.id = p.company_id
@@ -495,7 +512,7 @@ export function reviewQueue(a: App) {
   for (const d of drafts) {
     const g = byContact.get(d.contact_id) ?? { fingerprint: pendingFingerprint(a, d.contact_id), why: JSON.parse(one<{ reasons: string | null }>(a.db, 'select reasons from companies where id = ?', d.company_id)?.reasons ?? '{}').reasons?.map((r: { text: string }) => r.text) ?? [], contact_id: d.contact_id, name: `${d.first_name} ${d.last_name ?? ''}`.trim(), title: d.title, email: d.email, email_source: d.email_source, domain: d.domain, company: d.company, score: d.score, status: d.status, angle: d.angle, emails: [], company_id: d.company_id };
     const claims: Claim[] = JSON.parse(d.claims);
-    g.emails.push({ step: d.step, subject: d.subject, body: d.body, delay_days: d.delay_days, issues: JSON.parse(d.lint),
+    g.emails.push({ step: d.step, subject: subjectAsSent(a, d.contact_id, d.step, d.subject), body: d.body, delay_days: d.delay_days, issues: JSON.parse(d.lint),
       claims: claims.map((c) => ({ ...c, source: one(a.db, 'select quote, source_url, fetched_at from facts where id = ?', c.fact_id) ?? null })) });
     byContact.set(d.contact_id, g);
   }
