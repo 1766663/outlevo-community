@@ -1,13 +1,13 @@
 import { ImapFlow, type MailboxObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
-import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress, unsubscribeHeader } from './compliance.js';
+import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress, unsubscribedContact, unsubscribeHeader } from './compliance.js';
 import { all, getMeta, likeText, logEvent, one, run, setMeta } from './db.js';
 import { normalizeDomain } from './csv.js';
 import { lintEmail, linksIn } from './lint.js';
 import { linkDomains } from './pipeline.js';
 
-export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
+export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; authServer?: string; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
 export interface Inbox { fetchNew(sinceUid: number, knownValidity?: string | null): Promise<{ messages: Array<Incoming & { uid: number }>; lastUid: number; validity?: string }> }
 
 /**
@@ -41,7 +41,7 @@ export function imapInbox(a: App): Inbox {
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: from.split('@').length === 2 && senderProven(p.headers.get('authentication-results'), from.split('@')[1]!), subject: p.subject ?? '', text: mailText(p), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: from.split('@').length === 2 && senderProven(p.headers.get('authentication-results'), from.split('@')[1]!, authServers(imap)), authServer: authServerOf(p.headers.get('authentication-results')), subject: p.subject ?? '', text: mailText(p), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid, validity };
@@ -59,11 +59,33 @@ const ADDRESS = /(?<![a-z0-9._%+-])[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi
 const MESSAGE_ID = /<[^<>\s]+@[^<>\s]+>/g;
 const MAX_NAMED = 100;
 
-/** Reads the topmost Authentication-Results, the one your own provider added. Anything else in the message came from the sender. */
-export function senderProven(header: unknown, fromDomain: string): boolean {
+const topHeader = (header: unknown): string => {
   const first = Array.isArray(header) ? header[0] : header;
+  return typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
+};
+/** The server that signed a verdict, the first word of the header. */
+export const authServerOf = (header: unknown) => topHeader(header).replace(/\([^)]*\)/g, ' ').split(';')[0]!.trim().split(/\s+/)[0]!.toLowerCase();
+
+const AUTH_SERVERS: Record<string, string> = { 'gmail.com': 'google.com', 'googlemail.com': 'google.com', 'fastmail.com': 'messagingengine.com', 'zoho.com': 'zohomail.com', 'zoho.eu': 'zohomail.eu' };
+/**
+ * Whose verdict counts: your mail provider's. A sender can write the same header, and if the provider adds none, theirs is on top.
+ * imap.auth_server says who, for a provider this cannot work out, and "any" trusts the top header whoever wrote it.
+ */
+export function authServers(imap: { host: string; auth_server?: string }): string[] | undefined {
+  const set = imap.auth_server?.trim().toLowerCase();
+  if (set === 'any') return undefined;
+  if (set) return [set];
+  const labels = imap.host.toLowerCase().split('.');
+  const short = labels.length > 2 && labels.at(-1)!.length === 2 && /^(co|com|org|net|ac|gov)$/.test(labels.at(-2)!);
+  const base = labels.slice(short ? -3 : -2).join('.');
+  return [base, ...(AUTH_SERVERS[base] ? [AUTH_SERVERS[base]!] : [])];
+}
+
+/** Reads the topmost Authentication-Results, the one your own provider added, if `servers` names who that is. Anything else in the message came from the sender. */
+export function senderProven(header: unknown, fromDomain: string, servers?: string[]): boolean {
   if (!fromDomain) return false;
-  const raw = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
+  const raw = topHeader(header);
+  if (servers) { const by = authServerOf(header); if (!servers.some((s) => by === s || by.endsWith(`.${s}`))) return false; }
   // Comments and quoted strings can carry anything: only the verdicts themselves count, one method at a time.
   const verdicts = raw.replace(/\([^)]*\)/g, ' ').replace(/"[^"]*"/g, ' ').split(';').map((x: string) => x.trim());
   const d = fromDomain.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -82,7 +104,7 @@ function bookedContact(a: App, text: string) {
 
 function handleBooking(a: App, m: Incoming): boolean {
   if (!BOOKING_SENDER.test(m.from)) return false;
-  if (!m.authenticated) { logEvent(a.db, a.now(), 'meeting.unproven', { from: m.from, subject: m.subject.slice(0, 200) }); return true; }
+  if (!m.authenticated) { logEvent(a.db, a.now(), 'meeting.unproven', { from: m.from, subject: m.subject.slice(0, 200), verdict_by: m.authServer ?? null }); return true; }
   if (REMINDER.test(m.subject)) return true;
   const who = bookedContact(a, `${m.subject}\n${m.text}`);
   if (!who) return true;
@@ -162,12 +184,28 @@ function whoWrote(a: App, m: Incoming): { contact: Who | undefined; direct: bool
   return colleague && asksToStop(m.subject, m.text) ? { contact: colleague, direct: false } : { contact: undefined, direct: false };
 }
 
+/** The List-Unsubscribe mailto, signed for one person: it counts for them from whichever address it arrives. */
+function handleUnsubscribe(a: App, m: Incoming): boolean {
+  const id = unsubscribedContact(a, m.subject);
+  const contact = id ? one<Who>(a.db, 'select id, first_name, company_id, email from contacts where id = ?', id) : undefined;
+  if (!contact) return false;
+  if (one(a.db, 'select 1 from replies where message_id = ?', m.messageId)) return true;
+  cancelRest(a, contact.id);
+  run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved') and contact_id in (select id from contacts where company_id = ?)", contact.company_id);
+  suppress(a, contact.email, 'asked to stop');
+  if (m.from.includes('@') && m.from !== contact.email) suppress(a, m.from, 'asked to stop');
+  run(a.db, "insert into replies (contact_id, message_id, from_addr, subject, text, class, reason, received_at, suggested_status, verified) values (?, ?, ?, ?, ?, 'unsubscribe', 'Used the unsubscribe link', ?, 'none', 1)", contact.id, m.messageId, m.from, m.subject, m.text.slice(0, 20_000), m.receivedAt.toISOString());
+  logEvent(a.db, a.now(), 'reply.received', { contact_id: contact.id, class: 'unsubscribe' });
+  return true;
+}
+
 /** Reads new mail. Nothing goes out from here: an answer is only ever a suggestion waiting for you. */
 export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
   const since = Number(getMeta(a.db, 'imap_last_uid') ?? 0);
   const { messages, lastUid, validity } = await inbox.fetchNew(since, getMeta(a.db, 'imap_uid_validity'));
   let handled = 0;
   for (const m of messages) {
+    if (handleUnsubscribe(a, m)) { handled++; continue; }
     if (handleBounce(a, m)) { handled++; continue; }
     // A person we wrote to who works at Calendly or Cal.com is a person: their reply, or their opt-out, comes first.
     const { contact } = whoWrote(a, m);
@@ -204,8 +242,8 @@ export async function checkReplies(a: App, inbox: Inbox = imapInbox(a)) {
       run(a.db, "update drafts set status = 'cancelled' where status in ('pending','approved') and contact_id in (select id from contacts where company_id = ?)", contact.company_id);
     }
     if (cls === 'unsubscribe') { suppress(a, contact.email, 'asked to stop'); if (m.from !== contact.email) suppress(a, m.from, 'asked to stop'); }
-    run(a.db, `insert into replies (contact_id, message_id, from_addr, subject, text, class, reason, received_at, suggested, suggested_status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      contact.id, m.messageId, m.from, m.subject, m.text.slice(0, 20_000), cls, reason, m.receivedAt.toISOString(), suggested, suggested ? 'pending' : 'none');
+    run(a.db, `insert into replies (contact_id, message_id, from_addr, subject, text, class, reason, received_at, suggested, suggested_status, verified) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      contact.id, m.messageId, m.from, m.subject, m.text.slice(0, 20_000), cls, reason, m.receivedAt.toISOString(), suggested, suggested ? 'pending' : 'none', m.authenticated ? 1 : 0);
     logEvent(a.db, a.now(), 'reply.received', { contact_id: contact.id, class: cls });
   }
   setMeta(a.db, 'imap_last_uid', String(lastUid));
@@ -243,7 +281,7 @@ export async function sendSuggestedReply(a: App, replyId: number, deps: { checks
   if (!run(a.db, "update replies set suggested_status = 'sent' where id = ? and suggested_status = 'pending'", replyId).changes) throw new Error(`Reply ${replyId} has no answer waiting`);
   const s = a.config.sender;
   try {
-    await a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), headers: unsubscribeHeader(a.config), inReplyTo: r.message_id, references: r.message_id });
+    await a.mailer().send({ from: `${s.name} <${s.email}>`, to: r.from_addr, subject: /^re:/i.test(r.subject ?? '') ? r.subject! : `Re: ${r.subject ?? ''}`, text: r.suggested + footer(a.config), headers: unsubscribeHeader(a, r.contact_id), inReplyTo: r.message_id, references: r.message_id });
   } catch (e) { run(a.db, "update replies set suggested_status = 'pending' where id = ?", replyId); throw e; }
   logEvent(a.db, a.now(), 'reply.sent', { reply_id: replyId });
   return { sent: true };

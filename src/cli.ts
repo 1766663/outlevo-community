@@ -239,16 +239,16 @@ async function main() {
         if (!flags.json) console.log(`Read ${r.read} messages, ${r.handled} from people you wrote to.`);
         else return output(r);
       }
-      const rows = all<any>(a.db, 'select id, from_addr, class, reason, suggested, suggested_status from replies order by id desc limit 50');
-      if (sub === 'list') return output(rows, rows.map((x) => `#${x.id} ${x.class.padEnd(13)} ${x.from_addr}${x.suggested_status === 'pending' ? `  answer waiting: outlevo answer ${x.id}` : ''}`).join('\n') || 'No replies yet.');
+      const rows = all<any>(a.db, 'select id, from_addr, class, reason, suggested, suggested_status, verified from replies order by id desc limit 50');
+      if (sub === 'list') return output(rows, rows.map((x) => `#${x.id} ${x.class.padEnd(13)} ${x.from_addr}${x.verified === 0 ? '  (sender not verified)' : ''}${x.suggested_status === 'pending' ? `  answer waiting: outlevo answer ${x.id}` : ''}`).join('\n') || 'No replies yet.');
       const waiting = rows.filter((x) => x.suggested_status === 'pending');
       if (waiting.length) console.log(waiting.map((x) => `Answer waiting for ${x.from_addr}: outlevo answer ${x.id}`).join('\n'));
       return;
     }
     case 'answer': {
       const id = idOf(sub, 'A reply id');
-      const w = one<{ from_addr: string; suggested: string | null }>(a.db, 'select from_addr, suggested from replies where id = ?', id);
-      if (w?.suggested && !flags.json) console.error(`To ${w.from_addr}:\n${w.suggested}`);
+      const w = one<{ from_addr: string; suggested: string | null; verified: number | null }>(a.db, 'select from_addr, suggested, verified from replies where id = ?', id);
+      if (w?.suggested && !flags.json) console.error(`To ${w.from_addr}${w.verified === 0 ? ' (sender not verified: this could be forged)' : ''}:\n${w.suggested.replace(CONTROL, '')}`);
       await needsPerson(`Send this answer${w ? ` to ${w.from_addr}` : ''}`);
       const r = await sendSuggestedReply(a, id); return output(r, 'Sent.'); }
     case 'suppress': { suppress(a, need(sub, 'an email or a domain'), 'added by hand'); return output({ suppressed: sub }, `Will never write to ${sub}.`); }

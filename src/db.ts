@@ -33,7 +33,7 @@ create table if not exists company_emails (
 create table if not exists replies (
   id integer primary key, contact_id integer references contacts(id) on delete set null, message_id text unique, from_addr text not null,
   subject text, text text, class text not null, reason text, received_at text not null,
-  suggested text, suggested_status text not null default 'none' check (suggested_status in ('none','pending','sent','dismissed')));
+  suggested text, suggested_status text not null default 'none' check (suggested_status in ('none','pending','sent','dismissed')), verified integer);
 create table if not exists meetings (
   id integer primary key, contact_id integer not null references contacts(id) on delete cascade, source text not null, title text,
   message_id text unique, status text not null default 'booked' check (status in ('booked','cancelled')), booked_at text not null);
@@ -60,6 +60,7 @@ export function openPath(path: string): Db {
   const db = new DatabaseSync(path);
   db.exec('pragma journal_mode = wal; pragma foreign_keys = on; pragma busy_timeout = 5000;');
   db.exec(SCHEMA);
+  if (!all<{ name: string }>(db, 'pragma table_info(replies)').some((c) => c.name === 'verified')) db.exec('alter table replies add column verified integer');
   return db;
 }
 

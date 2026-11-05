@@ -139,6 +139,7 @@ const views = {
         el('div', {}, el('h3', {}, r.first_name ? `${r.first_name} ${r.last_name ?? ''}` : r.from_addr), el('div', { class: 'small muted' }, `${r.domain ?? ''} · ${when(r.received_at)}`)),
         el('span', { class: `pill ${r.class === 'interested' ? 'good' : r.class === 'unsubscribe' ? 'bad' : ''}` }, r.class.replaceAll('_', ' '))),
       el('p', { class: 'small muted' }, r.reason),
+      r.verified === 0 && el('p', { class: 'issue warning' }, 'Sender not verified: this could be forged. Check before you answer.'),
       el('pre', {}, r.text),
       r.suggested && el('div', { class: 'email' }, el('div', { class: 'small muted' }, r.suggested_status === 'sent' ? 'You sent this answer' : r.suggested_status === 'dismissed' ? 'Dismissed answer' : 'Suggested answer'), el('div', { class: 'body' }, r.suggested)),
       r.suggested_status === 'pending' && el('div', { class: 'actions' },

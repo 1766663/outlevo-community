@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import type { Config } from './config.js';
@@ -86,8 +89,11 @@ export class ClaudeCliModel implements Model {
   json<T>(r: JsonRequest): Promise<T> {
     const prompt = `${r.user}\n\nAnswer with only a JSON object matching this schema:\n${JSON.stringify(r.schema)}`;
     return new Promise((resolve, reject) => {
+      // An empty folder of its own: claude reads settings and MCP servers from where it runs, and a shared /tmp is open to anyone on the machine.
+      const cwd = mkdtempSync(join(tmpdir(), 'outlevo-claude-'));
       const child = this.exec('claude', ['-p', '--output-format', 'json', '--model', this.name, '--tools', '', '--system-prompt', r.system],
-        { maxBuffer: 20_000_000, timeout: 300_000, cwd: process.env.TMPDIR || '/tmp' }, (err, stdout) => {
+        { maxBuffer: 20_000_000, timeout: 300_000, cwd }, (err, stdout) => {
+          rmSync(cwd, { recursive: true, force: true });
           if (err) return reject(new Error(`claude failed: ${err.message}`));
           try {
             const outer = JSON.parse(String(stdout)) as { result?: string; is_error?: boolean };
