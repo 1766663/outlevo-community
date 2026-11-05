@@ -1,3 +1,4 @@
+import { LOOPBACK } from './mailer.js';
 import { ImapFlow, type MailboxObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
@@ -28,7 +29,8 @@ export function imapInbox(a: App): Inbox {
   if (!imap.host || !imap.user || !a.secrets.imap_password) throw new Error('Set imap.host, imap.user and OUTLEVO_IMAP_PASSWORD so replies can be read');
   return {
     async fetchNew(sinceUid, knownValidity) {
-      const c = new ImapFlow({ host: imap.host, port: imap.port, secure: imap.secure, ...(imap.secure ? {} : { doSTARTTLS: true }), auth: { user: imap.user, pass: a.secrets.imap_password! }, logger: false });
+      // As for SMTP (mailer.ts): plain only to this machine, for a local bridge or test server; anywhere else STARTTLS is required.
+      const c = new ImapFlow({ host: imap.host, port: imap.port, secure: imap.secure, ...(imap.secure ? {} : { doSTARTTLS: !LOOPBACK.test(imap.host) }), auth: { user: imap.user, pass: a.secrets.imap_password! }, logger: false });
       await c.connect();
       const lock = await c.getMailboxLock('INBOX');
       const box = c.mailbox as MailboxObject;

@@ -84,7 +84,7 @@ const decode = (s: string) => s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e: stri
 const SKIPPED = new Set(['script', 'style', 'noscript', 'svg', 'template', 'iframe']);
 const LINE_BREAK = /^(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article)$/;
 // Control and direction characters could rewrite a terminal or disguise a quote. Pages have no business sending them.
-export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f‪-‮⁦-⁩]/g;
 const asciiLower = (s: string) => s.replace(/[A-Z]+/g, (x) => x.toLowerCase());
 
 /** Walks the tags once, in one pass: a page is hostile input, and a regex over unclosed tags takes minutes on a small one. */
@@ -221,8 +221,22 @@ export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
     if (!r?.res.ok || !/html|text\/plain/i.test(r.res.headers.get('content-type') ?? '')) return null;
     const html = await readCapped(r.res);
     const title = titleOf(html);
-    return { url: r.url, text: htmlToText(html), links: extractLinks(html, r.url), title: title ? decode(title).replace(CONTROL, '').trim() : null };
+    return { url: r.url, text: htmlToText(html) + structuredAddress(html), links: [...new Set([...extractLinks(html, r.url), ...boardUrls(html)])], title: title ? decode(title).replace(CONTROL, '').trim() : null };
   };
+}
+
+// Job boards are often linked from scripts (a careers page that renders from JSON), not an <a>: their URLs are taken
+// from the raw page too. Only these three hosts, and the board still has to carry the company's name (jobs.ts).
+const BOARD_URL = /https?:\\?\/\\?\/(?:(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io|jobs\.lever\.co|jobs\.ashbyhq\.com)\\?\/[a-z0-9_.\-?=\\/]{2,120}/gi;
+export const boardUrls = (html: string) => [...new Set([...html.slice(0, MAX_BYTES).matchAll(BOARD_URL)].map((m) => m[0].replace(/\\\//g, '/')))].slice(0, 20);
+
+// An address and phone a site gives only in its structured data (JSON-LD), written out as an address is, so the Form D
+// check can read it like the footer (funding.ts). Values only, at most a few, never markup.
+export function structuredAddress(html: string): string {
+  const field = (k: string) => [...html.slice(0, MAX_BYTES).matchAll(new RegExp(`"${k}"\\s*:\\s*"([^"\\\\<>]{1,60})"`, 'g'))].map((m) => m[1]!.replace(CONTROL, '').trim()).slice(0, 3);
+  const city = field('addressLocality'); const region = field('addressRegion'); const zip = field('postalCode'); const tel = field('telephone');
+  const lines = city.map((c, i) => `${c}, ${region[i] ?? ''} ${zip[i] ?? ''}`.trim()).concat(tel.map((t) => `Phone ${t}`));
+  return lines.length ? `\n${lines.join('\n')}` : '';
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();

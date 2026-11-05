@@ -157,7 +157,9 @@ async function main() {
         return;
       }
       const p = buildPack(a, flags.out);
-      return output({ ...r, pack: p.index }, [...r.emails.map((e, i) => `${i + 1}. ${e.subject}\n${e.body}`), `\nUpdated: ${p.index}.${r.approval_reset ? ' These had been approved, so they wait for your approval again.' : ''}`].join('\n\n'));
+      // A request the quotes cannot support (a claim, a promise) is left out, and saying so beats reprinting the same emails as a change.
+      const same = r.unchanged ? '\nNothing changed: what you asked for is not something the quotes about them support, or the emails already did it.' : '';
+      return output({ ...r, pack: p.index }, [...r.emails.map((e, i) => `${i + 1}. ${e.subject}\n${e.body}`), `${same}\nUpdated: ${p.index}.${r.approval_reset ? ' These had been approved, so they wait for your approval again.' : ''}`].join('\n\n'));
     }
     case 'drop': {
       const r = dropCompany(a, need(sub, 'a company: outlevo drop northwind.com'), !!flags.undo);
@@ -208,7 +210,7 @@ async function main() {
         const r = importContacts(a, need(arg, 'a file'));
         return output(r, [`Added ${r.added}. Already here ${r.duplicates}. Skipped ${r.skipped.length}.`, ...r.skipped.map((x) => `  ${x.row}: ${x.reason}`), ...(r.new_companies.length ? [`New companies from this file, not yet researched: ${r.new_companies.join(', ')}`, 'Next: outlevo research, then outlevo write'] : r.added ? ['Next: outlevo write'] : [])].join('\n'));
       }
-      if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.${r.added ? ' Next: outlevo write' : ''}`); }
+      if (sub === 'find') { const r = await findContacts(a, { limit: num(flags.limit, 5) }); return output(r, `Looked at ${r.companies} companies, ${r.added} verified contacts added, ${r.not_verified} addresses not verified and left out.${r.no_buyer ? ` ${r.no_buyer} had nobody in your buyer roles (${(getIcp(a)?.buyer_titles ?? []).join(', ') || 'see outlevo icp show'}) or leading the company: add one with outlevo contacts import.` : ''}${r.added ? ' Next: outlevo write' : ''}`); }
       const people = all<any>(a.db, 'select p.id, p.first_name, p.last_name, p.title, p.email, p.email_source, p.status, c.domain from contacts p join companies c on c.id = p.company_id order by p.id');
       return output(people, people.map((p) => `${String(p.id).padStart(4)}  ${p.status.padEnd(8)} ${p.email_source.padEnd(10)} ${p.first_name} ${p.last_name ?? ''} <${p.email}>${p.title ? `, ${p.title}` : ''}`).join('\n') || 'No contacts yet.');
     }

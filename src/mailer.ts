@@ -4,7 +4,7 @@ import type { Config } from './config.js';
 export type OutMail = { from: string; to: string; subject: string; text: string; headers?: Record<string, string>; inReplyTo?: string; references?: string };
 export interface Mailer { send(m: OutMail): Promise<{ messageId: string }>; verify(): Promise<unknown> }
 
-const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
+export const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
 /** Over the network the password goes only inside TLS: someone in between could otherwise strip STARTTLS and read it. */
 export const smtpOptions = (c: Config, pass: string) => ({ host: c.smtp.host, port: c.smtp.port, secure: c.smtp.secure, requireTLS: !c.smtp.secure && !LOOPBACK.test(c.smtp.host), auth: { user: c.smtp.user, pass } });
 
