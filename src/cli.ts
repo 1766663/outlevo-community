@@ -83,7 +83,7 @@ try {
 parsed = parseArgs({
   allowPositionals: true, strict: true,
   options: {
-    json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, undo: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+    version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, yes: { type: 'boolean' }, once: { type: 'boolean' }, relearn: { type: 'boolean' }, undo: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
     website: { type: 'string' }, won: { type: 'string' }, lost: { type: 'string' }, brief: { type: 'string' }, like: { type: 'string' }, titles: { type: 'string' }, name: { type: 'string' },
     count: { type: 'string' }, limit: { type: 'string' }, port: { type: 'string' }, out: { type: 'string' }, company: { type: 'string', multiple: true }, contact: { type: 'string' },
   },
@@ -112,6 +112,7 @@ const output = (data: unknown, human?: string) => console.log(flags.json || huma
 
 async function main() {
   const [cmd, sub, arg] = pos;
+  if (flags.version) return console.log((JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version);
   if (!cmd || flags.help) return console.log(HELP);
 
   if (cmd === 'init') {

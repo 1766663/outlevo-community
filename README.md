@@ -1,4 +1,33 @@
-# Outlevo Community
+<p align="center">
+  <a href="https://outlevo.com/?utm_source=community&utm_medium=readme">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-on-dark.svg">
+      <img alt="Outlevo" src=".github/assets/logo.svg" width="200">
+    </picture>
+  </a>
+</p>
+
+<h1 align="center">Outlevo Community</h1>
+
+<p align="center">
+  The free, open-source AI SDR that runs on your machine.
+  <br /><br />
+  <a href="https://outlevo.com/?utm_source=community&utm_medium=readme">Website</a>
+  ·
+  <a href="#community-and-outlevo-cloud">Community and Cloud</a>
+  ·
+  <a href="CHANGELOG.md">Changelog</a>
+  ·
+  <a href="https://github.com/1766663/outlevo-community/issues">Issues</a>
+  ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-purple" alt="License: AGPLv3"></a>
+  <a href="https://github.com/1766663/outlevo-community/actions/workflows/ci.yml"><img src="https://github.com/1766663/outlevo-community/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/1766663/outlevo-community/releases"><img src="https://img.shields.io/github/v/release/1766663/outlevo-community?label=release" alt="Latest release"></a>
+</p>
 
 **Install it, give it your website, get your sales pack: who to sell to, companies that fit, and emails ready to send, each built on a quote from that company's own site.**
 
@@ -39,7 +68,35 @@ their first accounts. Who owns ramp for them?
 3. **With [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme), from $29 a month.** Verified contacts and warmed-up mailboxes, ready to go, running while your laptop is closed.
 4. **[Have Outlevo's team run it](https://outlevo.com/done-for-you/?utm_source=community&utm_medium=readme).** Managed from $999 a month, or pay per booked meeting, by application.
 
-> **Status: early.** The checks, limits and guards have tests. It has not yet been run end to end against a live model, a real mailbox and Hunter, so expect rough edges and start with a small list.
+> **Status: early.** The checks, limits and guards have tests, and it has run against a live model and Hunter, and through a local mail server. It has not yet sent from a real mailbox on a real domain, so expect rough edges and start with a small list.
+
+## Community and Outlevo Cloud
+
+Community is complete on its own and stays free. [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme) is a separate, paid, hosted product for what a laptop cannot do well.
+
+| | Community | Outlevo Cloud |
+|---|---|---|
+| Price | Free, plus your own model, mailbox and contacts costs | From $29 a month ([pricing](https://outlevo.com/pricing)) |
+| Where it runs | Your machine | Hosted, always on |
+| Code | Open source, AGPLv3 | Proprietary |
+| Research, ICP, sourced emails | Yes | Yes |
+| Finding verified contacts | Your own Hunter key or list | Paid in credits: 8 a researched contact |
+| Mailboxes | Your own, set up and warmed by you | Bought, set up and warmed for you |
+| Sending | When you have approved it and your machine is on | Around the clock, with autopilot |
+| Meetings | Booking link in answers you approve, meetings counted | Answered and booked on autopilot |
+| LinkedIn | Notes to send by hand | Sent from your own account, LinkedIn signals (posts, engagement, job changes), voice notes |
+| CRM, ads, agencies | No | Yes |
+| Done for you | No | Managed from $999 a month, or pay per meeting by application |
+| Support | GitHub Issues | AI answers, with escalation |
+
+You can use just part of Cloud from the command line, and each paid call tells you its price first:
+
+```bash
+outlevo cloud connect     # paste the key; or set OUTLEVO_KEY
+outlevo cloud find --brief "Logistics software in the US" --count 10
+outlevo cloud contacts <company-id> --titles "VP Sales,Head of Sales" --yes
+outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person launches it
+```
 
 ## What makes it different
 
@@ -166,34 +223,6 @@ It uses the Anthropic API by default, on your own key, with no limit unless you 
 
 You can use a local Claude Code install instead with `outlevo config set model.provider claude-cli`. Check that your plan's terms allow this kind of use before you do.
 
-## Community and Outlevo Cloud
-
-Community is complete on its own and stays free. [Outlevo Cloud](https://outlevo.com/?utm_source=community&utm_medium=readme) is a separate, paid, hosted product for what a laptop cannot do well.
-
-| | Community | Outlevo Cloud |
-|---|---|---|
-| Price | Free, plus your own model, mailbox and contacts costs | From $29 a month ([pricing](https://outlevo.com/pricing)) |
-| Where it runs | Your machine | Hosted, always on |
-| Code | Open source, AGPLv3 | Proprietary |
-| Research, ICP, sourced emails | Yes | Yes |
-| Finding verified contacts | Your own Hunter key or list | Paid in credits: 8 a researched contact |
-| Mailboxes | Your own, set up and warmed by you | Bought, set up and warmed for you |
-| Sending | When you have approved it and your machine is on | Around the clock, with autopilot |
-| Meetings | Booking link in answers you approve, meetings counted | Answered and booked on autopilot |
-| LinkedIn | Notes to send by hand | Sent from your own account, LinkedIn signals (posts, engagement, job changes), voice notes |
-| CRM, ads, agencies | No | Yes |
-| Done for you | No | Managed from $999 a month, or pay per meeting by application |
-| Support | GitHub Issues | AI answers, with escalation |
-
-You can use just part of Cloud from the command line, and each paid call tells you its price first:
-
-```bash
-outlevo cloud connect     # paste the key; or set OUTLEVO_KEY
-outlevo cloud find --brief "Logistics software in the US" --count 10
-outlevo cloud contacts <company-id> --titles "VP Sales,Head of Sales" --yes
-outlevo cloud handoff --name "Q4 logistics"     # Cloud sends, after a person launches it
-```
-
 ## Development
 
 ```bash
@@ -202,7 +231,13 @@ npm run typecheck
 npm run dev -- --help
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). AI coding agents: [AGENTS.md](AGENTS.md).
+
+Built with TypeScript on Node.js and its built-in SQLite, with [Claude](https://www.anthropic.com/claude) as the default model. Nothing else to host.
+
+## Contact
+
+Cloud and sales: hello@notify.outlevo.com. Vulnerabilities: [SECURITY.md](SECURITY.md). Everything else: [GitHub Issues](https://github.com/1766663/outlevo-community/issues).
 
 ## License
 
