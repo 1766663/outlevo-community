@@ -1,6 +1,6 @@
 {
-  "name": "outlevo-community",
-  "version": "0.1.0",
+  "name": "outlevo",
+  "version": "0.1.1",
   "description": "Give it your website, get your sales pack: who to sell to, companies that fit, and emails built on quotes from their own sites. Open-source alternative to 11x, Artisan and Apollo's outreach.",
   "keywords": [
     "ai-sdr",

@@ -28,6 +28,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/outlevo"><img src="https://img.shields.io/npm/v/outlevo" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-purple" alt="License: AGPLv3"></a>
   <a href="https://github.com/Outlevo/outlevo-community/actions/workflows/ci.yml"><img src="https://github.com/Outlevo/outlevo-community/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Outlevo/outlevo-community/releases"><img src="https://img.shields.io/github/v/release/Outlevo/outlevo-community?label=release" alt="Latest release"></a>
@@ -46,14 +47,12 @@
 You need Node 22.13 or newer and an [Anthropic API key](https://console.anthropic.com/), which you pay for by use.
 
 ```bash
-git clone https://github.com/Outlevo/outlevo-community.git && cd outlevo-community
-npm install && npm run build && npm link
 mkdir my-outbound && cd my-outbound
 export ANTHROPIC_API_KEY=...
-outlevo start https://yourcompany.com
+npx outlevo start https://yourcompany.com
 ```
 
-Then open `sales-pack/index.html`. It finds the companies itself, and your own list is optional. One real run of 20 companies took about 13 minutes, at about 8 model calls per company in the pack. It runs on your machine and sends nothing until you say so.
+Then open `sales-pack/index.html`. It finds the companies itself, and your own list is optional. One real run of 20 companies took about 13 minutes, at about 8 model calls per company in the pack. It runs on your machine and sends nothing until you say so. For the other commands below, run `npm install -g outlevo`, or put `npx` in front of each.
 
 The open-source alternative to 11x, Artisan and Apollo's outreach.
 
@@ -256,6 +255,8 @@ You can use Anthropic's local command-line tool instead with `outlevo config set
 ## Development
 
 ```bash
+git clone https://github.com/Outlevo/outlevo-community.git && cd outlevo-community
+npm install
 npm test
 npm run typecheck
 npm run dev -- --help

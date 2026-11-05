@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+Published on npm: `npx outlevo start https://yourcompany.com`. The repository moved to the Outlevo organization.
+
 ## 0.1.0
 
 The first version: give it your website, get your sales pack.
