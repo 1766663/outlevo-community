@@ -75,22 +75,72 @@ const decode = (s: string) => s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e: stri
   return ENTITIES[e.toLowerCase()] ?? m;
 });
 
+const SKIPPED = new Set(['script', 'style', 'noscript', 'svg', 'template', 'iframe']);
+const LINE_BREAK = /^(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article)$/;
+// Control and direction characters could rewrite a terminal or disguise a quote. Pages have no business sending them.
+export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+const asciiLower = (s: string) => s.replace(/[A-Z]+/g, (x) => x.toLowerCase());
+
+/** Walks the tags once, in one pass: a page is hostile input, and a regex over unclosed tags takes minutes on a small one. */
+function walkTags(html: string, onText: (t: string) => void, onTag: (name: string, tag: string) => void) {
+  const lower = asciiLower(html); const noCloser = new Set<string>();
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) break;
+    onText(html.slice(i, lt));
+    if (html.startsWith('<!--', lt)) { const end = html.indexOf('-->', lt + 4); i = end < 0 ? html.length : end + 3; onText(' '); continue; }
+    const gt = html.indexOf('>', lt + 1);
+    if (gt < 0 || gt === lt + 1) { onText(html.slice(lt, gt < 0 ? undefined : gt + 1)); i = gt < 0 ? html.length : gt + 1; continue; }
+    const name = lower.slice(lt + 1, Math.min(gt, lt + 40)).match(/^\/?[a-z0-9]*/)![0];
+    onTag(name, html.slice(lt, gt + 1));
+    i = gt + 1;
+    if (SKIPPED.has(name) && !noCloser.has(name)) {
+      const close = lower.indexOf(`</${name}`, i);
+      const end = close < 0 ? -1 : html.indexOf('>', close);
+      if (end < 0) noCloser.add(name); else i = end + 1;
+    }
+  }
+  if (i < html.length && html.indexOf('<', i) < 0) onText(html.slice(i));
+}
+
 export function htmlToText(html: string): string {
-  return decode(html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|svg|template|iframe)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article)\b[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' '))
-    .replace(/[ \t\f\v]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+  const out: string[] = [];
+  walkTags(html, (t) => out.push(t), (name) => out.push(LINE_BREAK.test(name) ? '\n' : ' '));
+  return decode(out.join('')).replace(CONTROL, '').replace(/[^\S\n]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
 }
 
 export function extractLinks(html: string, base: string): string[] {
   const out = new Set<string>();
-  for (const m of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)/gi)) {
-    try { const u = new URL(decode(m[1]!), base); if (u.protocol === 'http:' || u.protocol === 'https:') { u.hash = ''; out.add(u.href); } } catch { /* not a link */ }
-  }
+  walkTags(html, () => {}, (name, tag) => {
+    if (name !== 'a') return;
+    const href = tag.match(/\bhref\s*=\s*["']([^"'#]+)/i)?.[1];
+    if (!href) return;
+    try { const u = new URL(decode(href), base); if (u.protocol === 'http:' || u.protocol === 'https:') { u.hash = ''; out.add(u.href); } } catch { /* not a link */ }
+  });
   return [...out];
 }
+
+function titleOf(html: string): string | null {
+  const lower = asciiLower(html); const start = lower.indexOf('<title');
+  const open = start < 0 ? -1 : html.indexOf('>', start);
+  const close = open < 0 ? -1 : lower.indexOf('</title>', open);
+  return close < 0 ? null : html.slice(open + 1, close);
+}
+
+const MAX_ROBOTS_RULES = 2000; const MAX_RULE_LENGTH = 500;
+/** A robots.txt pattern, where `*` is anything and a final `$` is the end. Written out, because as a regex a short rule can hang the process. */
+export function robotsRuleMatches(rule: string, path: string): boolean {
+  const anchored = rule.endsWith('$');
+  const parts = (anchored ? rule.slice(0, -1) : rule).split('*');
+  if (!path.startsWith(parts[0]!)) return false;
+  let at = parts[0]!.length;
+  for (let i = 1; i < parts.length; i++) { const f = path.indexOf(parts[i]!, at); if (f < 0) return false; at = f + parts[i]!.length; }
+  if (!anchored) return true;
+  const last = parts.at(-1)!;
+  return parts.length === 1 ? path === parts[0] : path.endsWith(last) && path.length - last.length >= at - last.length;
+}
+const decodedPath = (s: string) => { try { return decodeURI(s); } catch { return s; } };
 
 /** The rules for `*` and for our own agent; the longest matching rule wins, Allow on a tie. */
 export function robotsAllows(robots: string, path: string, agent = 'outlevocommunitybot'): boolean {
@@ -108,9 +158,10 @@ export function robotsAllows(robots: string, path: string, agent = 'outlevocommu
   const mine = groups.filter((g) => g.agents.includes(agent));
   const use = mine.length ? mine : groups.filter((g) => g.agents.includes('*'));
   let best: [boolean, string] | null = null;
-  for (const r of use.flatMap((g) => g.rules)) {
-    const re = new RegExp('^' + r[1].split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*').replace(/\\\$$/, '$'));
-    if (re.test(path) && (!best || r[1].length > best[1].length || (r[1].length === best[1].length && r[0]))) best = r;
+  const seen = decodedPath(path);
+  for (const r of use.flatMap((g) => g.rules).slice(0, MAX_ROBOTS_RULES)) {
+    if (r[1].length > MAX_RULE_LENGTH) continue;
+    if (robotsRuleMatches(decodedPath(r[1]), seen) && (!best || r[1].length > best[1].length || (r[1].length === best[1].length && r[0]))) best = r;
   }
   return best ? best[0] : true;
 }
@@ -148,7 +199,9 @@ export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
     const u = new URL(raw);
     if (!robots.has(u.origin)) {
       const r = await get(`${u.origin}/robots.txt`, doFetch, 'text/plain').catch(() => null);
-      robots.set(u.origin, r?.res.ok ? await readCapped(r.res) : '');
+      // A server that cannot answer may be saying no (RFC 9309), and asked again next time. A 404 and the like mean there are no rules.
+      if (!r || r.res.status >= 500) return false;
+      robots.set(u.origin, r.res.ok ? await readCapped(r.res) : '');
     }
     return robotsAllows(robots.get(u.origin)!, u.pathname + u.search);
   };
@@ -156,8 +209,8 @@ export function makeFetcher(doFetch: typeof fetch = pinnedFetch): PageFetcher {
     const r = await get(raw, doFetch, 'text/html,application/xhtml+xml', robotsSay);
     if (!r?.res.ok || !/html|text\/plain/i.test(r.res.headers.get('content-type') ?? '')) return null;
     const html = await readCapped(r.res);
-    const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-    return { url: r.url, text: htmlToText(html), links: extractLinks(html, r.url), title: title ? decode(title).trim() : null };
+    const title = titleOf(html);
+    return { url: r.url, text: htmlToText(html), links: extractLinks(html, r.url), title: title ? decode(title).replace(CONTROL, '').trim() : null };
   };
 }
 

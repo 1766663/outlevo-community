@@ -16,6 +16,7 @@ import { addMeeting, checkReplies, sendSuggestedReply } from './replies.js';
 import { sendNext } from './send.js';
 import { buildPack } from './pack.js';
 import { prepareSite, start } from './start.js';
+import { CONTROL } from './fetcher.js';
 
 const HELP = `outlevo: an open-source AI SDR for B2B. Runs on your machine.
 
@@ -105,7 +106,7 @@ async function needsPerson(what: string) {
 /** The same line for the dashboard. Its link goes to stdout, so a script that captures stdout must not get a page that can approve. */
 const atTerminal = () => process.env.OUTLEVO_ALLOW_SCRIPTED_APPROVAL === '1' || (!!process.stdin.isTTY && !!process.stdout.isTTY);
 const need = (v: string | undefined, what: string) => { if (!v) throw new Error(`Missing ${what}. See: outlevo --help`); return v; };
-const output = (data: unknown, human?: string) => console.log(flags.json || human === undefined ? JSON.stringify(data, null, 2) : human);
+const output = (data: unknown, human?: string) => console.log(flags.json || human === undefined ? JSON.stringify(data, null, 2) : human.replace(CONTROL, ''));
 
 async function main() {
   const [cmd, sub, arg] = pos;

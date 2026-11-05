@@ -11,8 +11,8 @@ const webUrl = (u: string) => { try { const x = new URL(u); return x.protocol ==
 // A spreadsheet would run a cell that starts like a formula, and these cells hold text from strangers' websites.
 const csvCell = (v: unknown) => { const s = /^\s*[=+\-@]/.test(String(v ?? '')) ? `'${v}` : String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s; };
 
-// Scraped text ends up in these files, and a Markdown viewer would load an image or run a tag in it. Addresses in <angle brackets> stay.
-const inertMd = (md: string) => md.replace(/!\[/g, '!\\[').replace(/<(?=[a-z!/?][^@>]*>)/gi, '&lt;');
+// Scraped text ends up in these files, and a Markdown viewer would load an image, run a tag or dress up a link in it. Only a plain <address> stays.
+const inertMd = (md: string) => md.replace(/!\[/g, '!\\[').replace(/\]\(/g, ']\\(').replace(/<(?![^\s<>@]+@[^\s<>@]+>)/g, '&lt;');
 
 type Email = { step: number; sent: boolean; subject: string; body: string; delay_days: number; claims: Array<{ text: string; source: { quote: string; source_url: string } | null }> };
 export type PackCompany = { id: number; domain: string; name: string | null; score: number | null; why: string[]; to: string; person: string | null; email: string | null; emails: Email[]; blocked: boolean };
@@ -96,7 +96,8 @@ export function buildPack(a: App, out = 'sales-pack') {
   const building = join(dir, '.pack-building');
   const mails = join(building, 'emails');
   rmSync(building, { recursive: true, force: true });
-  mkdirSync(mails, { recursive: true });
+  mkdirSync(building, { recursive: true, mode: 0o700 }); // It holds people's addresses.
+  mkdirSync(mails);
   const left: Left = {
     failed: all_.filter((c) => c.blocked).map((c) => c.domain),
     unfinished: [...domainsWhere(a, "status = 'new'"), ...all_.filter((c) => !c.emails.length).map((c) => c.domain)],

@@ -41,7 +41,7 @@ their first accounts. Who owns ramp for them?
 
 ## What makes it different
 
-- **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number in an email must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
+- **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number written in digits must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports, numbers in words included. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
 - **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
 - **It goes all the way to the meeting.** An interested reply gets a drafted answer with your booking link. When Calendly, Cal.com or Google Calendar emails you the booking, it shows up in Meetings.
@@ -134,6 +134,7 @@ These are in the code, and each has a test.
 |---|---|
 | Approved emails only | A send picks only what a person approved, and checks it again at that moment. An approval covers the emails that were shown: if they changed in between, nothing is approved. `approve`, `answer` and `resume` need a person at a terminal, or a dashboard started from one |
 | Unsourced claims do not go out | The checks in [`src/lint.ts`](src/lint.ts) run when written and again when sent |
+| Links go only where they should | An email may link to your site or the prospect's, and an answer to your booking host too, with or without `https://`. A domain spelled out to dodge this (`evil dot com`) is not caught, so read what you approve |
 | No fake threads or fake history | No "Re:" on a first email, no "as we discussed" |
 | Opt-outs work | Every email carries your postal address and a way out, plus a `List-Unsubscribe` mailto header. A plain request to stop, in several languages, from them, an alias or a colleague, suppresses the address without calling the model. Anything less clear goes to the model |
 | A reply stops the sequence | For that person and for the rest of their company. An out-of-office does not |

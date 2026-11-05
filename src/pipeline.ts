@@ -253,6 +253,9 @@ export function importContacts(a: App, path: string) {
     if (!EMAIL.test(email)) { skipped.push({ row: label, reason: 'not a single valid email address' }); continue; }
     if (PERSONAL.test(email)) { skipped.push({ row: label, reason: 'a personal address, not a work one' }); continue; }
     if (!first) { skipped.push({ row: label, reason: 'no first name' }); continue; }
+    // The company's domain is where emails to this person may link, so a row must not name just any.
+    const site = normalizeDomain(domain) ?? ''; const at = email.toLowerCase().split('@')[1]!;
+    if (site && at !== site && !at.endsWith(`.${site}`) && !site.endsWith(`.${at}`)) { skipped.push({ row: label, reason: `the address is not at ${site}` }); continue; }
     try {
       const c = addCompany(a, domain, 'csv', row.company);
       if (c.added) newCompanies.push(c.domain);
@@ -267,7 +270,7 @@ export function importContacts(a: App, path: string) {
 type Written = { angle: string; emails: Array<{ subject: string; body: string; delay_days: number; claims: Claim[] }> };
 
 /** Where an email to this company may link: your site and theirs. */
-export const linkDomains = (a: App, domain: string) => [(one<{ url: string }>(a.db, 'select url from product')?.url ?? '').replace(/^https?:\/\//, ''), domain].filter(Boolean);
+export const linkDomains = (a: App, domain: string) => [normalizeDomain(one<{ url: string }>(a.db, 'select url from product')?.url ?? ''), domain].filter((d): d is string => Boolean(d));
 
 function lintSequence(a: App, seq: Written, facts: KnownFact[], domain: string) {
   const productFacts = all<{ text: string; quote: string }>(a.db, 'select text, quote from product_facts');

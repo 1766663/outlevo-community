@@ -4,7 +4,7 @@ import { type App, nullable, obj, S, UNTRUSTED, untrusted } from './app.js';
 import { asksToStop, type Check, checkBounces, footer, isStopped, isSuppressed, ownWords, readiness, ready, suppress, unsubscribeHeader } from './compliance.js';
 import { all, getMeta, likeText, logEvent, one, run, setMeta } from './db.js';
 import { normalizeDomain } from './csv.js';
-import { lintEmail } from './lint.js';
+import { lintEmail, linksIn } from './lint.js';
 import { linkDomains } from './pipeline.js';
 
 export type Incoming = { messageId: string; from: string; subject: string; text: string; autoSubmitted?: boolean; authenticated?: boolean; inReplyTo?: string | undefined; references?: string[]; receivedAt: Date };
@@ -28,7 +28,7 @@ export function imapInbox(a: App): Inbox {
   if (!imap.host || !imap.user || !a.secrets.imap_password) throw new Error('Set imap.host, imap.user and OUTLEVO_IMAP_PASSWORD so replies can be read');
   return {
     async fetchNew(sinceUid, knownValidity) {
-      const c = new ImapFlow({ host: imap.host, port: imap.port, secure: imap.secure, auth: { user: imap.user, pass: a.secrets.imap_password! }, logger: false });
+      const c = new ImapFlow({ host: imap.host, port: imap.port, secure: imap.secure, ...(imap.secure ? {} : { doSTARTTLS: true }), auth: { user: imap.user, pass: a.secrets.imap_password! }, logger: false });
       await c.connect();
       const lock = await c.getMailboxLock('INBOX');
       const box = c.mailbox as MailboxObject;
@@ -41,7 +41,7 @@ export function imapInbox(a: App): Inbox {
           lastUid = Math.max(lastUid, m.uid);
           const p = await simpleParser(m.source);
           const from = p.from?.value[0]?.address?.toLowerCase() ?? '';
-          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: senderProven(p.headers.get('authentication-results'), from.split('@')[1] ?? ''), subject: p.subject ?? '', text: mailText(p), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
+          messages.push({ uid: m.uid, messageId: p.messageId ?? `uid-${m.uid}`, from, authenticated: from.split('@').length === 2 && senderProven(p.headers.get('authentication-results'), from.split('@')[1]!), subject: p.subject ?? '', text: mailText(p), inReplyTo: p.inReplyTo, references: ([] as string[]).concat(p.references ?? []), autoSubmitted: /auto-replied|auto-generated/i.test(String(p.headers.get('auto-submitted') ?? '')), receivedAt: p.date ?? new Date() });
         }
       } finally { lock.release(); await c.logout(); }
       return { messages, lastUid, validity };
@@ -51,16 +51,18 @@ export function imapInbox(a: App): Inbox {
 
 // A booking tool or a calendar says so by email. A booking stops a company's emails, so the sender has to be proven:
 // a From header costs nothing to forge, the verdict your mail provider put on the message does not.
-const BOOKING_SENDER = /@((.*\.)?calendly\.com|(.*\.)?cal\.com)$|^calendar-notification@google\.com$/i;
+const BOOKING_SENDER = /^[^@]+@((.*\.)?calendly\.com|(.*\.)?cal\.com)$|^calendar-notification@google\.com$/i;
 const REMINDER = /\breminder\b/i;
 const CANCELLED = /\b(cancel+ed|declined)\b/i;
 const BOOKED = /\b(new event|invitation|booked|confirmed|scheduled|rescheduled)\b/i;
-const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+const ADDRESS = /(?<![a-z0-9._%+-])[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
 const MESSAGE_ID = /<[^<>\s]+@[^<>\s]+>/g;
+const MAX_NAMED = 100;
 
 /** Reads the topmost Authentication-Results, the one your own provider added. Anything else in the message came from the sender. */
 export function senderProven(header: unknown, fromDomain: string): boolean {
   const first = Array.isArray(header) ? header[0] : header;
+  if (!fromDomain) return false;
   const raw = typeof first === 'string' ? first : typeof (first as any)?.value === 'string' ? (first as any).value : '';
   // Comments and quoted strings can carry anything: only the verdicts themselves count, one method at a time.
   const verdicts = raw.replace(/\([^)]*\)/g, ' ').replace(/"[^"]*"/g, ' ').split(';').map((x: string) => x.trim());
@@ -114,13 +116,16 @@ export function withBookingLink(a: App, cls: string, suggested: string | null): 
 const cancelRest = (a: App, contactId: number) => run(a.db, "update drafts set status = 'cancelled' where contact_id = ? and status in ('pending','approved','blocked')", contactId);
 
 function handleBounce(a: App, m: Incoming): boolean {
-  if (!/^(mailer-daemon|postmaster|mail-daemon)@/i.test(m.from)) return false;
+  if (!/^(mailer-daemon|postmaster|mail-daemon)@[^@]+$/i.test(m.from)) return false;
+  // Someone we wrote to at postmaster@ is a person answering, and may be asking to stop.
+  if (one(a.db, 'select 1 from contacts where email = ?', m.from)) return false;
   // A bounce stops a person and can stop all sending, and a From line costs nothing to forge. The surest proof is our own Message-ID quoted back:
   // only whoever received that email has it, and then it is that person's own address at stake.
   const ids = [...new Set(m.text.match(MESSAGE_ID) ?? [])].slice(0, 100);
   const quoted = ids.length ? one<{ id: number; email: string }>(a.db, `select p.id, p.email from drafts d join contacts p on p.id = d.contact_id where d.status = 'sent' and d.message_id in (${ids.map(() => '?').join(',')}) limit 1`, ...ids) : undefined;
   // An exact address: ann@ must not take the blame for joann@.
-  const hit = quoted ?? bookedContact(a, m.text) ?? one<{ id: number; email: string }>(a.db, `select id, email from contacts where status = 'active' and email in (${[...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()))].map(() => '?').join(',') || "''"}) limit 1`, ...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase())));
+  const named = [...new Set((m.text.match(ADDRESS) ?? []).map((x) => x.toLowerCase()))].slice(0, MAX_NAMED); // A real bounce names a few; this much would overflow the query and jam the inbox.
+  const hit = quoted ?? bookedContact(a, m.text) ?? (named.length ? one<{ id: number; email: string }>(a.db, `select id, email from contacts where status = 'active' and email in (${named.map(() => '?').join(',')}) limit 1`, ...named) : undefined);
   // Failing that, a verified sender, on your domain or theirs: a stranger can verify a mailer-daemon on a domain of their own.
   const host = m.from.split('@')[1] ?? '';
   const onSide = (email: string) => [email.split('@')[1], a.config.sender.email.split('@')[1]].some((d) => d && (host === d || host.endsWith(`.${d}`)));
@@ -225,6 +230,14 @@ export async function sendSuggestedReply(a: App, replyId: number, deps: { checks
   const allowedLinkDomains = [...linkDomains(a, who?.domain ?? r.from_addr.split('@')[1] ?? ''), ...(booking ? [booking] : [])];
   const badLink = lintEmail({ subject: 'x', body: r.suggested, strict: false, allowedLinkDomains }).find((x) => x.rule === 'link-domain');
   if (badLink) throw new Error(`Not sent: ${badLink.message}. Dismiss this answer and write your own.`);
+  // calendly.com/you is your calendar, calendly.com/them is not.
+  if (booking && !linkDomains(a, who?.domain ?? '').includes(booking)) {
+    const own = new URL(/^https?:/i.test(a.config.booking_url) ? a.config.booking_url : `https://${a.config.booking_url}`).pathname.replace(/\/$/, '');
+    for (const l of linksIn(r.suggested)) {
+      const u = new URL(l.url); const host = u.hostname.replace(/^www\./, '');
+      if ((host === booking || host.endsWith(`.${booking}`)) && u.pathname !== own && !u.pathname.startsWith(`${own}/`)) throw new Error(`Not sent: a link goes to ${host}${u.pathname}, which is not your booking page. Dismiss this answer and write your own.`);
+    }
+  }
   const checks = await (deps.checks ? deps.checks() : readiness(a));
   if (!ready(checks)) throw new Error(`Not ready to send: ${checks.filter((c) => !c.ok && c.blocking).map((c) => c.name).join(', ')}. Run: outlevo doctor`);
   if (!run(a.db, "update replies set suggested_status = 'sent' where id = ? and suggested_status = 'pending'", replyId).changes) throw new Error(`Reply ${replyId} has no answer waiting`);

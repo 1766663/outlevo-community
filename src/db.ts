@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -48,6 +48,8 @@ export function openDb(home: string): Db {
   // Prospects and their replies live here: nobody else on this computer has a reason to read them.
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
+  // The folder holds the secrets, and a git add . next to it must not pick them up.
+  if (!existsSync(join(home, '.gitignore'))) writeFileSync(join(home, '.gitignore'), '*\n');
   const path = join(home, 'outlevo.db');
   if (!existsSync(path)) closeSync(openSync(path, 'a', 0o600));
   chmodSync(path, 0o600);

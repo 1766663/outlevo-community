@@ -5,6 +5,7 @@ import { logEvent, one, run } from '../src/db.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { testApp } from './helpers.js';
 
+const MINUTE = 60_000;
 let close: (() => void) | undefined;
 afterEach(() => close?.());
 
@@ -42,6 +43,36 @@ describe('dashboard', () => {
     expect((await call('/api/state', { headers: { cookie: `ol_session=${d.token}` } })).status).toBe(401);
     expect((await call(`/?token=${d.token}`, { headers: { cookie } })).status).toBe(303); // your own tab, reloaded on the old link
     expect((await call('/', { headers: { cookie } })).status).toBe(200);
+  });
+  it('an unused link stops working after an hour', async () => {
+    const a = testApp(); const d = await startDashboard(a, 0, { person: true }); close = () => d.server.close();
+    a.clock.now = new Date(a.clock.now.getTime() + 61 * MINUTE);
+    const r = await fetch(d.url, { redirect: 'manual' });
+    expect(r.status).toBe(401);
+    expect(await r.text()).toMatch(/expired/);
+  });
+  it('the session ends after an hour with nothing done, and polling does not keep it open', async () => {
+    const { a, call, cookie } = await start();
+    const state = () => call('/api/state', { headers: { cookie } });
+    for (let i = 0; i < 2; i++) { a.clock.now = new Date(a.clock.now.getTime() + 30 * MINUTE - 1000); expect((await state()).status).toBe(200); }
+    a.clock.now = new Date(a.clock.now.getTime() + 3000);
+    const r = await state();
+    expect(r.status).toBe(401);
+    expect(JSON.parse(r.body).error).toMatch(/session has ended/);
+    expect((await call('/', { headers: { cookie } })).status).toBe(401);
+    expect((await call('/api/stop', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })).status).toBe(401);
+    expect(isStopped(a)).toBeNull();
+  });
+  it('doing something keeps the session open, but never past 12 hours', async () => {
+    const { a, call, cookie } = await start();
+    const dismiss = () => call('/api/reply/dismiss', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{"id":1}' });
+    for (let i = 0; i < 23; i++) { a.clock.now = new Date(a.clock.now.getTime() + 31 * MINUTE); expect((await dismiss()).status).toBe(200); }
+    a.clock.now = new Date(a.clock.now.getTime() + 31 * MINUTE);
+    expect((await dismiss()).status).toBe(401);
+  });
+  it('the cookie carries the same limit', async () => {
+    const a = testApp(); const d = await startDashboard(a, 0, { person: true }); close = () => d.server.close();
+    expect((await fetch(d.url, { redirect: 'manual' })).headers.get('set-cookie')).toMatch(/Max-Age=43200/);
   });
   it('refuses the page and the API without the token', async () => {
     const { call } = await start();
