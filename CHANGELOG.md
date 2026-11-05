@@ -4,6 +4,11 @@
 
 Published on npm: `npx outlevo start https://yourcompany.com`. The repository moved to the Outlevo organization.
 
+- The local model tool is now the provider `local-cli`: `outlevo config set model.provider local-cli`. Change a config that used the old name.
+- An example sales pack made from a fictional company, at https://outlevo.github.io/outlevo-community/.
+- The README opens with one line, a demo GIF and a quick start that copies and runs.
+- The package always builds before it is packed, so it never ships an old `dist`.
+
 ## 0.1.0
 
 The first version: give it your website, get your sales pack.
