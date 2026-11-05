@@ -13,6 +13,8 @@ export type Page = { url: string; text: string; links: string[]; title: string |
 export type PageFetcher = (url: string) => Promise<Page | null>;
 /** Parsed JSON from a public API (a job board), or null. Untrusted like any page: read it, never follow it. */
 export type JsonFetcher = (url: string) => Promise<unknown | null>;
+/** Raw text from a public API (an XML filing), or null. */
+export type TextFetcher = (url: string) => Promise<string | null>;
 
 const privateV4 = (p: number[]) => {
   const [a = 0, b = 0] = p;
@@ -234,5 +236,15 @@ export function makeJsonFetcher(doFetch: typeof fetch = pinnedFetch): JsonFetche
     const r = await get(raw, doFetch, 'application/json', robotsSay);
     if (!r?.res.ok || !/json/i.test(r.res.headers.get('content-type') ?? '')) return null;
     try { return JSON.parse(await readCapped(r.res, MAX_JSON_BYTES)); } catch { return null; }
+  };
+}
+
+/** A public XML or text document (an SEC filing), with the same guards. */
+export function makeTextFetcher(doFetch: typeof fetch = pinnedFetch): TextFetcher {
+  const robotsSay = robotsChecker(doFetch);
+  return async (raw) => {
+    const r = await get(raw, doFetch, 'application/xml,text/xml,text/plain', robotsSay);
+    if (!r?.res.ok || !/xml|text\/plain/i.test(r.res.headers.get('content-type') ?? '')) return null;
+    return readCapped(r.res);
   };
 }

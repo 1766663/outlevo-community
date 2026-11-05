@@ -16,6 +16,8 @@ export type Config = {
   contacts: { max_lookups_per_day: number };
   loop_minutes: number;
   cloud_url: string;
+  /** Public sources read during research, no key and no model call: job boards the company links to, and its SEC Form D filings. */
+  signals: { job_boards: boolean; sec_form_d: boolean };
 };
 
 export const DEFAULTS: Config = {
@@ -31,6 +33,7 @@ export const DEFAULTS: Config = {
   contacts: { max_lookups_per_day: 0 }, // 0: no limit
   loop_minutes: 5,
   cloud_url: 'https://api.outlevo.com',
+  signals: { job_boards: true, sec_form_d: true },
 };
 
 export const homeDir = (env = process.env) => env.OUTLEVO_HOME || join(process.cwd(), '.outlevo');

@@ -45,6 +45,8 @@ their first accounts. Who owns ramp for them?
 
 - **Claims are checked, not trusted.** A fact is kept only if its quote is really on the page it names: that is code, word for word. A number written in digits must appear in a quote that email cites: code again. Then a second model reading looks for any statement about the company that no quote supports, numbers in words included. That last step is a model, so it can miss something, which is why you read every email. If an email fails, the model gets two more tries. If the first email still fails, the company's emails are blocked and cannot be approved. If only a follow-up fails, that follow-up is left out.
 - **It knows who is hiring.** When a company's own site links to its job board on Greenhouse, Lever or Ashby, the open roles of the last 60 days become dated facts, each quoting the title and linking to the posting. A company hiring sellers is often buying for them. No key and no model call: the boards are public. Only a board the company itself links to counts, so a posting is never pinned on the wrong company.
+- **It knows who raised money.** A US company raising money privately files a Form D with the SEC. A filing from the last 180 days becomes a dated fact, quoting the amount sold and linking to the filing on EDGAR. EDGAR's search matches loosely, so a filing counts only when the issuer's legal name is the company's own name (without Inc, LLC and the like) and its ZIP code or phone number is printed on the company's own website. Funds are skipped. Free, no key, no model call.
+- **Bring what you saw.** Found someone on LinkedIn writing about the problem you solve? Put the posts in a CSV and run `outlevo signals import`. Each becomes a fact about the author's company, in their own words with the link, and their first email and LinkedIn note open on it, written to them. This tool never reads LinkedIn: you paste what you saw. The company is still researched and has to fit your ICP.
 - **LinkedIn too, by hand.** With the emails, from the same quotes and held to the same checks, it writes a connection note and a follow-up for each company. A note that fails is left out and never holds back the emails. It never says "I emailed you", so it can go first.
 - **It learns from your deals.** Give it up to 15 companies you won and 15 you lost. It reads their home pages, and the ICP comes from what sets them apart, not from a filter list.
 - **B2B first.** Of the people you have at a company, it picks the one closest to the buyers in your ICP, and writes to one person per company at a time.
@@ -87,6 +89,7 @@ To make it better, add what you have:
 outlevo start https://yourcompany.com --won won.csv --lost lost.csv   # a column named domain
 outlevo companies import companies.csv                                # your own list, a column named domain
 outlevo contacts import people.csv                                    # email, first_name, last_name, title, domain
+outlevo signals import posts.csv                                      # posts you found: domain, name, text, post_url (title, date, email)
 ```
 
 Try the rules on any email, with no key and no network:
@@ -155,7 +158,7 @@ You are the sender, and the law applies to you (CAN-SPAM, GDPR, CASL and others)
 
 ## Where your data lives
 
-Everything is in `.outlevo/` next to where you run it, readable only by you: a SQLite database, your config and your secrets. What leaves it: page text and replies to your model provider, domains and addresses to Hunter if you use it, your mail to your mail server. It also visits the sites it researches (as `OutlevoCommunityBot`) and looks up DNS. It reaches Outlevo only if you connect Cloud and run a `cloud` command.
+Everything is in `.outlevo/` next to where you run it, readable only by you: a SQLite database, your config and your secrets. What leaves it: page text and replies to your model provider, domains and addresses to Hunter if you use it, your mail to your mail server. It also visits the sites it researches (as `OutlevoCommunityBot`) and looks up DNS. While researching it reads the public job boards those sites link to, and searches SEC EDGAR for the company's name; turn either off with `outlevo config set signals.job_boards false` or `outlevo config set signals.sec_form_d false`. It reaches Outlevo only if you connect Cloud and run a `cloud` command.
 
 ## Model
 

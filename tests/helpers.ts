@@ -12,7 +12,7 @@ export const TUESDAY_NOON = new Date('2026-11-03T17:00:00Z'); // 12:00 in New Yo
 
 export type TestApp = App & { sent: OutMail[]; calls: JsonRequest[]; clock: { now: Date } };
 
-export function testApp(opts: { pages?: Record<string, Page>; json?: Record<string, unknown>; answers?: Record<string, any | ((r: JsonRequest) => any)>; config?: Partial<Config> } = {}): TestApp {
+export function testApp(opts: { pages?: Record<string, Page>; json?: Record<string, unknown>; text?: Record<string, string>; answers?: Record<string, any | ((r: JsonRequest) => any)>; config?: Partial<Config> } = {}): TestApp {
   const home = mkdtempSync(join(tmpdir(), 'outlevo-'));
   const sent: OutMail[] = []; const calls: JsonRequest[] = []; const clock = { now: TUESDAY_NOON };
   const model: Model = {
@@ -30,6 +30,7 @@ export function testApp(opts: { pages?: Record<string, Page>; json?: Record<stri
     model: () => model, mailer: () => mailer,
     fetchPage: async (url) => { const p = opts.pages?.[url]; if (!p) return null; return p; },
     fetchJson: async (url) => opts.json?.[url] ?? null,
+    fetchText: async (url) => opts.text?.[url] ?? null,
   };
 }
 
