@@ -42,6 +42,10 @@
   <em>Sped up, with made-up companies. <a href="https://outlevo.github.io/outlevo-community/">Open a full example pack, no install needed</a>.</em>
 </p>
 
+- **Every claim has its quote.** A fact is kept only if its quote is really on the page it names, and a first email that fails the checks cannot be approved.
+- **Nothing sends without you.** Every email and every answer to a reply waits for your approval. There is no autopilot.
+- **Yours, on your machine.** Free and open source, with your own model key, your mailbox and your data in one folder.
+
 ## Quick start
 
 You need Node 22.13 or newer and an [Anthropic API key](https://console.anthropic.com/), which you pay for by use.
@@ -77,6 +81,8 @@ their first accounts. Who owns ramp for them?
 
 "We are hiring 4 account executives in Austin"   https://northwind.example/careers
 ```
+
+If it saves you a few hours of prospecting, a ⭐ helps other people find it.
 
 ## Then, four ways to send
 
@@ -268,7 +274,7 @@ Built with TypeScript on Node.js and its built-in SQLite, with Anthropic's model
 
 ## Contact
 
-Cloud and sales: hello@notify.outlevo.com. Vulnerabilities: [SECURITY.md](SECURITY.md). Everything else: [GitHub Issues](https://github.com/Outlevo/outlevo-community/issues).
+Cloud and sales: hello@notify.outlevo.com. Vulnerabilities: [SECURITY.md](SECURITY.md). Questions and ideas: [GitHub Discussions](https://github.com/Outlevo/outlevo-community/discussions). Bugs: [GitHub Issues](https://github.com/Outlevo/outlevo-community/issues).
 
 ## License
 
